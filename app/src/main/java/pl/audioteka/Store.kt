@@ -8,6 +8,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Rozdział: plik nr [i], początek [start] ms w tym pliku. */
+class Chap(val i: Int, val start: Long, val title: String)
+
 /** Jedna książka: folder z wieloma plikami albo pojedyncze długie nagranie. */
 class Book(
     val id: String,
@@ -15,8 +18,11 @@ class Book(
     val files: List<String>,
     val names: List<String>,
     val durs: List<Long>,
-    val cover: String?
+    val cover: String?,
+    val imgs: List<String>,
+    chapters: List<Chap>
 ) {
+    val ch: List<Chap> = chapters.ifEmpty { names.mapIndexed { i, n -> Chap(i, 0, n) } }
     val total: Long get() = durs.sum()
 }
 
@@ -31,7 +37,28 @@ class Progress(
     val bm: MutableList<Bookmark> = mutableListOf()
 )
 
-/** Wspólny stan aplikacji (ten sam proces dla ekranu i usługi odtwarzania). */
+/** Pomocnicze obliczenia rozdziałów. */
+object Ch {
+    fun index(b: Book, i: Int, pos: Long): Int {
+        var k = 0
+        for ((n, c) in b.ch.withIndex()) {
+            if (c.i < i || (c.i == i && c.start <= pos + 500)) k = n else break
+        }
+        return k
+    }
+
+    /** Koniec rozdziału k w milisekundach pliku (lub długość pliku). */
+    fun end(b: Book, k: Int, fileDur: Long): Long {
+        val c = b.ch[k]
+        val nx = b.ch.getOrNull(k + 1)
+        return if (nx != null && nx.i == c.i) nx.start else fileDur
+    }
+
+    fun label(b: Book, k: Int): String =
+        (if (b.ch.size > 1) "${k + 1}/${b.ch.size} · " else "") + (b.ch.getOrNull(k)?.title ?: "")
+}
+
+/** Wspólny stan aplikacji (ten sam proces dla ekranu, usługi i widżetu). */
 object Store {
     private var dir: File? = null
 
@@ -41,6 +68,9 @@ object Store {
     var autorewind = true
     var invert = false
     var ghToken = ""
+    var skipSilence = false
+    var boost = 0
+    val covers = HashMap<String, String>()
 
     @Volatile var books: List<Book> = emptyList()
     private val progress = HashMap<String, Progress>()
@@ -52,6 +82,8 @@ object Store {
     @Volatile var sleepEnd = 0L
     @Volatile var sleepMinutes = 0
     @Volatile var sleepChapter = false
+    @Volatile var sleepUntilI = -1
+    @Volatile var sleepUntilPos = 0L
 
     @Synchronized
     fun init(ctx: Context) {
@@ -62,6 +94,12 @@ object Store {
     }
 
     fun book(id: String?): Book? = if (id == null) null else books.firstOrNull { it.id == id }
+
+    fun lastBook(): Book? = books.filter { it.id !in hidden }
+        .filter { val p = peek(it.id); p.updated > 0 && !p.done }
+        .maxByOrNull { peek(it.id).updated }
+
+    fun coverOf(b: Book): String? = covers[b.id] ?: b.cover
 
     @Synchronized
     fun prog(id: String): Progress = progress.getOrPut(id) { Progress() }
@@ -82,6 +120,8 @@ object Store {
         sleepEnd = 0
         sleepMinutes = 0
         sleepChapter = false
+        sleepUntilI = -1
+        sleepUntilPos = 0
     }
 
     fun pct(b: Book): Int {
@@ -124,6 +164,11 @@ object Store {
         o.put("autorewind", autorewind)
         o.put("invert", invert)
         o.put("ghToken", ghToken)
+        o.put("skipSilence", skipSilence)
+        o.put("boost", boost)
+        val cv = JSONObject()
+        for ((k, v) in covers) cv.put(k, v)
+        o.put("covers", cv)
         o.put("hidden", JSONArray(hidden.toList()))
         o.put("statTotal", statTotal)
         val sd = JSONObject()
@@ -155,6 +200,9 @@ object Store {
             autorewind = o.optBoolean("autorewind", true)
             invert = o.optBoolean("invert", false)
             ghToken = o.optString("ghToken", "")
+            skipSilence = o.optBoolean("skipSilence", false)
+            boost = o.optInt("boost", 0)
+            o.optJSONObject("covers")?.let { c -> for (k in c.keys()) covers[k] = c.optString(k) }
             o.optJSONArray("hidden")?.let { a -> for (n in 0 until a.length()) hidden.add(a.getString(n)) }
             statTotal = o.optLong("statTotal", 0)
             o.optJSONObject("statDays")?.let { d -> for (k in d.keys()) statDays[k] = d.optLong(k) }
@@ -182,13 +230,19 @@ object Store {
         books = list
         val a = JSONArray()
         for (b in list) {
+            val ch = JSONArray()
+            for (c in b.ch) ch.put(JSONObject().put("i", c.i).put("s", c.start).put("t", c.title))
             a.put(
                 JSONObject().put("id", b.id).put("title", b.title).put("files", JSONArray(b.files))
                     .put("names", JSONArray(b.names)).put("durs", JSONArray(b.durs)).put("cover", b.cover ?: "")
+                    .put("imgs", JSONArray(b.imgs)).put("ch", ch)
             )
         }
         write("library.json", a.toString())
     }
+
+    private fun strings(a: JSONArray?): List<String> =
+        if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
 
     private fun loadLibrary() {
         val s = read("library.json") ?: return
@@ -197,16 +251,20 @@ object Store {
             val out = ArrayList<Book>()
             for (n in 0 until a.length()) {
                 val o = a.getJSONObject(n)
-                val f = o.getJSONArray("files")
-                val nm = o.getJSONArray("names")
                 val d = o.getJSONArray("durs")
+                val chs = ArrayList<Chap>()
+                o.optJSONArray("ch")?.let { c ->
+                    for (k in 0 until c.length()) {
+                        val x = c.getJSONObject(k)
+                        chs.add(Chap(x.optInt("i"), x.optLong("s"), x.optString("t")))
+                    }
+                }
                 out.add(
                     Book(
                         o.getString("id"), o.getString("title"),
-                        (0 until f.length()).map { f.getString(it) },
-                        (0 until nm.length()).map { nm.getString(it) },
+                        strings(o.getJSONArray("files")), strings(o.getJSONArray("names")),
                         (0 until d.length()).map { d.getLong(it) },
-                        o.optString("cover").ifEmpty { null }
+                        o.optString("cover").ifEmpty { null }, strings(o.optJSONArray("imgs")), chs
                     )
                 )
             }

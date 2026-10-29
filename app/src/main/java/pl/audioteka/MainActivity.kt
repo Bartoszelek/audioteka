@@ -4,20 +4,21 @@ import android.Manifest
 import android.app.Activity
 import android.app.Dialog
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -28,7 +29,6 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
-import android.util.LruCache
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -44,32 +44,27 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import java.io.File
 import java.util.Locale
-import java.util.concurrent.Future
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 class MainActivity : Activity() {
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     private val REQ_FOLDER = 42
+    private val REQ_COVER = 43
+    private val REQ_MERGE = 44
     private val ACTION_INSTALL = "pl.audioteka.INSTALL_RESULT"
-    private var update: Updater.Info? = null
-    private var updMsg = ""
-    private var updStatus: TextView? = null
 
     private var controller: MediaController? = null
     private var future: Future<MediaController>? = null
     private lateinit var root: FrameLayout
     private val h = Handler(Looper.getMainLooper())
-    private val io = Executors.newFixedThreadPool(2)
-    private val covers = LruCache<String, Bitmap>(40)
-    private val noCover = HashSet<String>()
+    private val io = Executors.newFixedThreadPool(3)
 
     private var screen = "lib"
     private var tab = "prog"
@@ -78,6 +73,11 @@ class MainActivity : Activity() {
     private var scanning = false
     private var scanMsg = ""
     private var statusView: TextView? = null
+    private var update: Updater.Info? = null
+    private var updMsg = ""
+    private var updStatus: TextView? = null
+    private var pendingBookId: String? = null
+    private var pendingKind = ""
 
     // widoki odtwarzacza odświeżane co pół sekundy
     private var vChapter: TextView? = null
@@ -89,6 +89,9 @@ class MainActivity : Activity() {
     private var vSleep: TextView? = null
     private var vSpeed: TextView? = null
     private var dragging = false
+    private var spanI = 0
+    private var spanStart = 0L
+    private var spanEnd = 0L
 
     private val fg get() = if (Store.invert) Color.WHITE else Color.BLACK
     private val bg get() = if (Store.invert) Color.BLACK else Color.WHITE
@@ -128,8 +131,8 @@ class MainActivity : Activity() {
                 null
             }
             controller?.addListener(ctlListener)
-            if (cur == null) cur = Store.book(controller?.currentMediaItem?.mediaId?.substringBefore("|"))
-            if (screen != "settings") render()
+            if (cur == null) cur = Store.book(Playback.bookIdOf(controller))
+            if (screen == "lib" || screen == "player") render()
         }, ContextCompat.getMainExecutor(this))
         h.post(ui)
     }
@@ -139,17 +142,25 @@ class MainActivity : Activity() {
         controller?.removeListener(ctlListener)
         future?.let { MediaController.releaseFuture(it) }
         controller = null
+        PlayerWidget.update(this, null)
         super.onStop()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (screen != "lib") {
-            screen = "lib"
-            render()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
+        when (screen) {
+            "help" -> {
+                screen = "settings"
+                render()
+            }
+            "lib" -> {
+                @Suppress("DEPRECATION")
+                super.onBackPressed()
+            }
+            else -> {
+                screen = "lib"
+                render()
+            }
         }
     }
 
@@ -271,48 +282,29 @@ class MainActivity : Activity() {
             tag = b.id
         }
         f.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
-        val cached = covers.get(b.id)
-        if (cached != null) {
-            iv.setImageBitmap(cached)
-        } else if (b.id !in noCover) {
+        val cached = Covers.cached(b)
+        if (cached != null) iv.setImageBitmap(cached) else {
             io.execute {
-                val bm = decodeCover(b)
-                h.post {
-                    if (bm != null) {
-                        covers.put(b.id, bm)
-                        if (iv.tag == b.id) iv.setImageBitmap(bm)
-                    } else noCover.add(b.id)
-                }
+                val bm = Covers.load(this, b)
+                h.post { if (iv.tag == b.id) iv.setImageBitmap(bm) }
             }
         }
         f.layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
         return f
     }
 
-    private fun decodeCover(b: Book): Bitmap? {
-        val c = b.cover ?: return null
-        return try {
-            val bytes: ByteArray? = if (c.startsWith("emb:")) {
-                val r = MediaMetadataRetriever()
-                try {
-                    r.setDataSource(this, Uri.parse(c.removePrefix("emb:")))
-                    r.embeddedPicture
-                } finally {
-                    try {
-                        r.release()
-                    } catch (e: Exception) {
-                    }
-                }
-            } else contentResolver.openInputStream(Uri.parse(c))?.use { it.readBytes() }
-            if (bytes == null) return null
-            val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
-            var s = 1
-            while (o.outWidth / (s * 2) >= 400 && o.outHeight / (s * 2) >= 400) s *= 2
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = s })
-        } catch (e: Exception) {
-            null
+    private fun thumb(src: String, sizeDp: Int, onClick: () -> Unit): View {
+        val f = FrameLayout(this)
+        f.background = border(2, 6)
+        f.setPadding(dp(2), dp(2), dp(2), dp(2))
+        val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; colorFilter = gray }
+        f.addView(iv, FrameLayout.LayoutParams(MATCH, dp(sizeDp)))
+        f.setOnClickListener { onClick() }
+        io.execute {
+            val bm = Covers.decode(this, src, 240)
+            h.post { if (bm != null) iv.setImageBitmap(bm) else f.visibility = View.GONE }
         }
+        return f
     }
 
     // ------------------------------------------------------------ ekrany
@@ -325,6 +317,7 @@ class MainActivity : Activity() {
         when (screen) {
             "player" -> renderPlayer()
             "settings" -> renderSettings()
+            "help" -> renderHelp()
             else -> renderLib()
         }
     }
@@ -347,13 +340,15 @@ class MainActivity : Activity() {
         head.addView(tv("Audioteka", 28f, true), lp(0, WRAP, 1f))
         head.addView(icon(R.drawable.ic_settings, 30) { screen = "settings"; render() })
         col.addView(head)
+
         val upd = update
         if (upd != null) {
             val box = hbox().apply {
                 background = border(3, 14)
                 setPadding(dp(14), dp(10), dp(10), dp(10))
             }
-            val st = tv(if (updMsg.startsWith("Pobieram") || updMsg.startsWith("Błąd") || updMsg.startsWith("Potwierdź")) updMsg else "Nowa wersja 1.${upd.number}", 15f, true)
+            val busy = updMsg.startsWith("Pobieram") || updMsg.startsWith("Błąd") || updMsg.startsWith("Potwierdź")
+            val st = tv(if (busy) updMsg else "Nowa wersja 1.${upd.number}", 15f, true)
             updStatus = st
             box.addView(st, lp(0, WRAP, 1f))
             box.addView(btn("Zainstaluj", size = 14f) { installUpdate() })
@@ -375,7 +370,7 @@ class MainActivity : Activity() {
             return
         }
 
-        val last = vis.filter { val p = Store.peek(it.id); p.updated > 0 && !p.done }.maxByOrNull { Store.peek(it.id).updated }
+        val last = Store.lastBook()
         if (last != null) {
             val card = hbox().apply {
                 background = border(3, 14)
@@ -386,7 +381,9 @@ class MainActivity : Activity() {
             val t = vbox()
             t.addView(tv(last.title, 18f, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
             val p = Store.peek(last.id)
-            t.addView(tv(chapterLabel(last, p.i), 13f, color = dim).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+            t.addView(tv(Ch.label(last, Ch.index(last, p.i, p.pos)), 13f, color = dim).apply {
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            })
             t.addView(bar(Store.pct(last)), lp(top = 8))
             t.addView(btn("Słuchaj dalej") { openBook(last, true) }, lp(top = 10))
             card.addView(t, lp(0, WRAP, 1f).apply { leftMargin = dp(14) })
@@ -448,10 +445,11 @@ class MainActivity : Activity() {
             val t = vbox()
             t.addView(tv(b.title, 16f, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
             val p = Store.peek(b.id)
-            val meta = hm(b.total) + (if (b.files.size > 1) " · ${b.files.size} plików" else "") +
-                (if (p.done) " · ukończona" else if (Store.pct(b) > 0) " · ${Store.pct(b)}%" else "")
+            val pct = Store.pct(b)
+            val meta = hm(b.total) + (if (b.ch.size > 1) " · ${b.ch.size} rozdz." else "") +
+                (if (p.done) " · ukończona" else if (pct > 0) " · $pct%" else "")
             t.addView(tv(meta, 13f, color = dim))
-            t.addView(bar(Store.pct(b)), lp(top = 6))
+            t.addView(bar(pct), lp(top = 6))
             r.addView(t, lp(0, WRAP, 1f).apply { leftMargin = dp(12); rightMargin = dp(6) })
             r.addView(icon(R.drawable.ic_more, 30) { bookMenu(b) })
             r.setOnClickListener { openBook(b, true) }
@@ -460,14 +458,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun chapterLabel(b: Book, i: Int): String =
-        (if (b.files.size > 1) "${i + 1}/${b.files.size} · " else "") + b.names.getOrElse(i) { "" }
-
     // ------------------------------------------------------------ odtwarzanie
     private fun activeController(): MediaController? {
         val b = cur ?: return null
         val c = controller ?: return null
-        return if (c.currentMediaItem?.mediaId?.substringBefore("|") == b.id) c else null
+        return if (Playback.bookIdOf(c) == b.id) c else null
     }
 
     private fun openBook(b: Book, play: Boolean) {
@@ -476,31 +471,7 @@ class MainActivity : Activity() {
             toast("Odtwarzacz się uruchamia – spróbuj za chwilę")
             return
         }
-        val curId = c.currentMediaItem?.mediaId?.substringBefore("|")
-        if (curId != b.id) {
-            if (curId != null) {
-                val old = Store.prog(curId)
-                old.i = c.currentMediaItemIndex
-                old.pos = c.currentPosition
-                old.updated = System.currentTimeMillis()
-                Store.saveState()
-            }
-            val items = b.files.mapIndexed { i, u ->
-                MediaItem.Builder().setUri(Uri.parse(u)).setMediaId("${b.id}|$i")
-                    .setMediaMetadata(
-                        MediaMetadata.Builder().setTitle(b.names[i]).setArtist(b.title).setAlbumTitle(b.title).build()
-                    ).build()
-            }
-            val p = Store.prog(b.id)
-            if (p.done) {
-                p.done = false
-                p.i = 0
-                p.pos = 0
-            }
-            c.setMediaItems(items, p.i.coerceIn(0, items.size - 1), p.pos)
-            c.setPlaybackSpeed(p.speed)
-            c.prepare()
-        }
+        Playback.load(c, b)
         cur = b
         if (play) c.play()
         screen = "player"
@@ -526,8 +497,11 @@ class MainActivity : Activity() {
     }
 
     private fun goTo(i: Int, pos: Long) {
-        val c = activeController() ?: return
         val b = cur ?: return
+        val c = activeController() ?: run {
+            openBook(b, false)
+            activeController()
+        } ?: return
         c.seekTo(i.coerceIn(0, b.files.size - 1), pos)
     }
 
@@ -549,6 +523,7 @@ class MainActivity : Activity() {
 
         val cv = coverView(b, 250)
         (cv.layoutParams as LinearLayout.LayoutParams).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) }
+        cv.setOnClickListener { coverDialog(b) }
         col.addView(cv)
         col.addView(tv(b.title, 20f, true).apply { gravity = Gravity.CENTER }, lp(top = 14))
         val chV = tv("", 15f, color = dim).apply { gravity = Gravity.CENTER; maxLines = 2 }
@@ -569,8 +544,7 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(s: SeekBar?) {
                     dragging = false
                     val c = activeController() ?: return
-                    val d = c.duration
-                    if (d != C.TIME_UNSET && d > 0) c.seekTo(d * (s?.progress ?: 0) / 1000)
+                    if (spanEnd > spanStart) c.seekTo(spanI, spanStart + (spanEnd - spanStart) * (s?.progress ?: 0) / 1000)
                 }
             })
         }
@@ -598,12 +572,7 @@ class MainActivity : Activity() {
             v.addView(tv(label, 12f, true))
             return v
         }
-        cell(icon(R.drawable.ic_prev, 30) {
-            val c = activeController()
-            if (c != null) {
-                if (c.currentPosition > 5000 || c.currentMediaItemIndex == 0) c.seekTo(0) else goTo(c.currentMediaItemIndex - 1, 0)
-            }
-        })
+        cell(icon(R.drawable.ic_prev, 30) { activeController()?.let { Playback.jump(it, b, -1) } })
         cell(labeled(R.drawable.ic_back, "${Store.back} s") { seekBy(-Store.back * 1000L) })
         val ppBox = FrameLayout(this).apply {
             background = GradientDrawable().apply {
@@ -620,10 +589,7 @@ class MainActivity : Activity() {
         ppWrap.addView(ppBox, FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER))
         ctl.addView(ppWrap, lp(0, WRAP, 1.3f))
         cell(labeled(R.drawable.ic_fwd, "${Store.fwd} s") { seekBy(Store.fwd * 1000L) })
-        cell(icon(R.drawable.ic_next, 30) {
-            val c = activeController()
-            if (c != null && c.currentMediaItemIndex < b.files.size - 1) goTo(c.currentMediaItemIndex + 1, 0)
-        })
+        cell(icon(R.drawable.ic_next, 30) { activeController()?.let { Playback.jump(it, b, 1) } })
         col.addView(ctl, lp(top = 18))
 
         val leftV = tv("", 14f, color = dim).apply { gravity = Gravity.CENTER }
@@ -631,14 +597,14 @@ class MainActivity : Activity() {
         col.addView(leftV, lp(top = 12))
 
         val opts = hbox()
-        fun opt(top: View, label: TextView, onClick: () -> Unit) {
+        fun opt(icon: View, label: TextView, onClick: () -> Unit) {
             val v = vbox().apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 background = border()
                 setPadding(dp(4), dp(10), dp(4), dp(10))
                 setOnClickListener { onClick() }
             }
-            v.addView(top)
+            v.addView(icon)
             v.addView(label.apply { gravity = Gravity.CENTER })
             opts.addView(v, lp(0, WRAP, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
         }
@@ -661,13 +627,18 @@ class MainActivity : Activity() {
         val i = c?.currentMediaItemIndex ?: p.i
         val pos = c?.currentPosition ?: p.pos
         val d0 = c?.duration ?: C.TIME_UNSET
-        val dur = if (d0 != C.TIME_UNSET && d0 > 0) d0 else b.durs.getOrElse(i) { 0L }
-        vChapter?.text = chapterLabel(b, i)
-        if (!dragging) vSeek?.progress = if (dur > 0) (pos * 1000 / dur).toInt() else 0
-        vCur?.text = hms(pos)
-        vDur?.text = hms(dur)
+        val fileDur = if (d0 != C.TIME_UNSET && d0 > 0) d0 else b.durs.getOrElse(i) { 0L }
+        val k = Ch.index(b, i, pos)
+        val chap = b.ch[k]
+        spanI = i
+        spanStart = if (chap.i == i) chap.start else 0L
+        spanEnd = maxOf(spanStart + 1, Ch.end(b, k, fileDur))
+        vChapter?.text = Ch.label(b, k)
+        if (!dragging) vSeek?.progress = ((pos - spanStart) * 1000 / (spanEnd - spanStart)).toInt().coerceIn(0, 1000)
+        vCur?.text = hms(pos - spanStart)
+        vDur?.text = hms(spanEnd - spanStart)
         val speed = c?.playbackParameters?.speed ?: p.speed
-        val left = b.durs.drop(i + 1).sum() + maxOf(0L, dur - pos)
+        val left = b.durs.drop(i + 1).sum() + maxOf(0L, fileDur - pos)
         vLeft?.text = "Do końca książki: " + hm((left / speed).toLong()) + (if (speed != 1f) " (przy ${sp(speed)})" else "")
         vSpeed?.text = sp(speed)
         vPP?.setImageResource(if (c != null && c.playWhenReady) R.drawable.ic_pause else R.drawable.ic_play)
@@ -679,7 +650,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ okna dialogowe
-    private fun sheet(title: String, build: (LinearLayout, Dialog) -> Unit) {
+    private fun sheet(title: String, build: (LinearLayout, Dialog) -> Unit): Dialog {
         val d = Dialog(this)
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val col = vbox().apply {
@@ -690,7 +661,7 @@ class MainActivity : Activity() {
             }
         }
         val head = hbox()
-        head.addView(tv(title, 19f, true), lp(0, WRAP, 1f))
+        head.addView(tv(title, 19f, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }, lp(0, WRAP, 1f))
         head.addView(icon(R.drawable.ic_close, 28) { d.dismiss() })
         col.addView(head)
         build(col, d)
@@ -704,6 +675,7 @@ class MainActivity : Activity() {
             setWindowAnimations(0)
         }
         d.show()
+        return d
     }
 
     private fun grid(col: LinearLayout, cols: Int, items: List<View>) {
@@ -729,7 +701,7 @@ class MainActivity : Activity() {
 
     private fun setSpeed(v: Float) {
         val b = cur ?: return
-        val s = (Math.round(v.coerceIn(0.5f, 3f) * 100) / 100f)
+        val s = Math.round(v.coerceIn(0.5f, 3f) * 100) / 100f
         activeController()?.setPlaybackSpeed(s)
         Store.prog(b.id).speed = s
         Store.saveState()
@@ -758,17 +730,25 @@ class MainActivity : Activity() {
         sheet("Wyłącznik czasowy") { col, d ->
             val opts = listOf(5, 10, 15, 20, 30, 45, 60).map { m ->
                 btn("$m min", size = 14f) {
-                    Store.sleepChapter = false
+                    Store.clearSleep()
                     Store.sleepMinutes = m
                     Store.sleepEnd = System.currentTimeMillis() + m * 60_000L
                     activeController()?.let { if (!it.playWhenReady) it.play() }
                     d.dismiss()
                 }
             } + btn("Koniec rozdz.", size = 14f) {
-                Store.sleepEnd = 0
-                Store.sleepMinutes = 0
-                Store.sleepChapter = true
-                activeController()?.let { if (!it.playWhenReady) it.play() }
+                val b = cur
+                val c = activeController()
+                if (b != null && c != null) {
+                    Store.clearSleep()
+                    val i = c.currentMediaItemIndex
+                    val k = Ch.index(b, i, c.currentPosition)
+                    val nx = b.ch.getOrNull(k + 1)
+                    Store.sleepUntilI = i
+                    Store.sleepUntilPos = if (nx != null && nx.i == i) nx.start else Long.MAX_VALUE
+                    Store.sleepChapter = true
+                    if (!c.playWhenReady) c.play()
+                }
                 d.dismiss()
             }
             grid(col, 4, opts)
@@ -783,13 +763,14 @@ class MainActivity : Activity() {
             col.addView(btn("Dodaj zakładkę w tym miejscu") { d.dismiss(); addBookmark() }, lp(top = 10))
             val bm = Store.peek(b.id).bm
             if (bm.isEmpty()) col.addView(tv("Brak zakładek.", 15f, color = dim), lp(top = 12))
-            bm.toList().forEachIndexed { k, z ->
+            for (z in bm.toList()) {
+                val k = Ch.index(b, z.i, z.pos)
+                val chStart = if (b.ch[k].i == z.i) b.ch[k].start else 0L
                 val t = vbox()
-                t.addView(tv(chapterLabel(b, z.i), 15f, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-                t.addView(tv(hms(z.pos) + if (z.note.isNotEmpty()) " · ${z.note}" else "", 13f, color = dim))
+                t.addView(tv(Ch.label(b, k), 15f, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+                t.addView(tv(hms(z.pos - chStart) + if (z.note.isNotEmpty()) " · ${z.note}" else "", 13f, color = dim))
                 val right = hbox()
                 right.addView(btn("Idź", size = 13f) {
-                    if (activeController() == null) openBook(b, false)
                     goTo(z.i, z.pos)
                     d.dismiss()
                 })
@@ -810,7 +791,7 @@ class MainActivity : Activity() {
         val i = c?.currentMediaItemIndex ?: Store.peek(b.id).i
         val pos = c?.currentPosition ?: Store.peek(b.id).pos
         sheet("Nowa zakładka") { col, d ->
-            col.addView(tv(chapterLabel(b, i) + " · " + hms(pos), 14f, color = dim), lp(top = 6))
+            col.addView(tv(Ch.label(b, Ch.index(b, i, pos)), 14f, color = dim), lp(top = 6))
             val e = EditText(this).apply {
                 hint = "Notatka (opcjonalnie)"
                 setTextColor(fg)
@@ -831,13 +812,14 @@ class MainActivity : Activity() {
 
     private fun chaptersDialog() {
         val b = cur ?: return
-        val curI = activeController()?.currentMediaItemIndex ?: Store.peek(b.id).i
-        sheet("Rozdziały (${b.files.size})") { col, d ->
-            b.names.forEachIndexed { i, n ->
-                val left = tv("${i + 1}. $n", 15f, i == curI).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
-                item(col, left, tv(hms(b.durs.getOrElse(i) { 0L }), 13f, color = dim).apply { setPadding(dp(8), 0, 0, 0) }) {
-                    if (activeController() == null) openBook(b, false)
-                    goTo(i, 0)
+        val c = activeController()
+        val curK = Ch.index(b, c?.currentMediaItemIndex ?: Store.peek(b.id).i, c?.currentPosition ?: Store.peek(b.id).pos)
+        sheet("Rozdziały (${b.ch.size})") { col, d ->
+            b.ch.forEachIndexed { k, ch ->
+                val len = Ch.end(b, k, b.durs.getOrElse(ch.i) { 0L }) - ch.start
+                val left = tv("${k + 1}. ${ch.title}", 15f, k == curK).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
+                item(col, left, tv(hms(len), 13f, color = dim).apply { setPadding(dp(8), 0, 0, 0) }) {
+                    goTo(ch.i, ch.start)
                     d.dismiss()
                 }
             }
@@ -847,6 +829,7 @@ class MainActivity : Activity() {
     private fun bookMenu(b: Book) {
         val p = Store.peek(b.id)
         sheet(b.title) { col, d ->
+            col.addView(btn("Zmień okładkę") { d.dismiss(); coverDialog(b) }, lp(top = 10))
             col.addView(btn(if (p.done) "Oznacz jako nieukończoną" else "Oznacz jako ukończoną") {
                 val q = Store.prog(b.id)
                 q.done = !q.done
@@ -854,17 +837,18 @@ class MainActivity : Activity() {
                 Store.saveState()
                 d.dismiss()
                 render()
-            }, lp(top = 10))
+            }, lp(top = 8))
             col.addView(btn("Zacznij od początku") {
                 val q = Store.prog(b.id)
                 q.done = false
                 q.i = 0
                 q.pos = 0
                 Store.saveState()
-                if (cur?.id == b.id) goTo(0, 0)
+                if (cur?.id == b.id) activeController()?.seekTo(0, 0)
                 d.dismiss()
                 render()
             }, lp(top = 8))
+            if (b.files.size > 1) col.addView(btn("Scal w jeden plik") { d.dismiss(); mergeDialog(b) }, lp(top = 8))
             col.addView(btn("Ukryj z biblioteki") {
                 Store.hidden.add(b.id)
                 Store.saveState()
@@ -873,6 +857,139 @@ class MainActivity : Activity() {
                 render()
             }, lp(top = 8))
         }
+    }
+
+    // ------------------------------------------------------------ okładki – wybór
+    private fun setCover(b: Book, src: String) {
+        Store.covers[b.id] = src
+        Store.saveState()
+        Covers.clear()
+        PlayerWidget.update(this, controller)
+        render()
+    }
+
+    private fun coverDialog(b: Book) {
+        sheet("Okładka: ${b.title}") { col, d ->
+            if (b.imgs.isNotEmpty()) {
+                col.addView(tv("Z folderu i z plików nagrania:", 14f, color = dim), lp(top = 8))
+                grid(col, 3, b.imgs.map { src -> thumb(src, 100) { setCover(b, src); d.dismiss() } })
+            }
+            col.addView(btn("Wygenerowana okładka (czarno-biała)") { setCover(b, "gen"); d.dismiss() }, lp(top = 12))
+            col.addView(btn("Wybierz zdjęcie z telefonu") {
+                d.dismiss()
+                pendingBookId = b.id
+                try {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"), REQ_COVER)
+                } catch (e: Exception) {
+                    toast("Nie mogę otworzyć wyboru zdjęć")
+                }
+            }, lp(top = 8))
+            col.addView(btn("Szukaj okładki w internecie") { d.dismiss(); searchDialog(b) }, lp(top = 8))
+        }
+    }
+
+    private fun saveCoverFrom(b: Book, src: String) {
+        toast("Zapisuję okładkę…")
+        io.execute {
+            val bm = Covers.decode(this, src, 900)
+            val path = if (bm != null) Covers.save(this, b, bm) else null
+            h.post { if (path != null) setCover(b, path) else toast("Nie udało się pobrać obrazu") }
+        }
+    }
+
+    private fun searchDialog(b: Book) {
+        sheet("Okładka z internetu") { col, d ->
+            val e = EditText(this).apply {
+                setText(b.title)
+                setTextColor(fg)
+                background = border()
+                setSingleLine(true)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            col.addView(e, lp(top = 10))
+            col.addView(tv("Wpisz tytuł i autora – wyniki z Google Books i Open Library.", 13f, color = dim), lp(top = 6))
+            val results = vbox()
+            val status = tv("", 14f, color = dim)
+            fun go() {
+                status.text = "Szukam…"
+                results.removeAllViews()
+                val q = e.text.toString().trim()
+                io.execute {
+                    val urls = try {
+                        Covers.search(q)
+                    } catch (x: Exception) {
+                        emptyList()
+                    }
+                    h.post {
+                        status.text = if (urls.isEmpty()) "Nic nie znaleziono. Spróbuj krótszego tytułu albo dopisz autora." else "Stuknij okładkę, żeby ją ustawić:"
+                        grid(results, 3, urls.map { u -> thumb(u, 120) { d.dismiss(); saveCoverFrom(b, u) } })
+                    }
+                }
+            }
+            col.addView(btn("Szukaj") { go() }, lp(top = 10))
+            col.addView(status, lp(top = 10))
+            col.addView(results)
+            go()
+        }
+    }
+
+    // ------------------------------------------------------------ scalanie
+    private fun mergeDialog(b: Book) {
+        val kind = Merger.kind(this, b)
+        sheet("Scal w jeden plik") { col, d ->
+            if (kind == null) {
+                col.addView(tv("Scalanie działa, gdy wszystkie pliki są MP3 albo wszystkie są M4A/M4B/AAC. Ta książka ma inne lub mieszane formaty.", 15f), lp(top = 10))
+                return@sheet
+            }
+            col.addView(tv("Powstanie jeden plik ${kind.uppercase()} z ${b.files.size} części, z zachowaniem rozdziałów. Oryginały zostaną bez zmian.", 15f), lp(top = 10))
+            col.addView(tv("Zapisz go w folderze z audiobookami – pojawi się w bibliotece, a części możesz potem ukryć. Przy plikach MP3 najlepiej działa stała jakość (CBR).", 13f, color = dim), lp(top = 8))
+            col.addView(btn("Wybierz, gdzie zapisać") {
+                d.dismiss()
+                pendingBookId = b.id
+                pendingKind = kind
+                val i = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType(if (kind == "mp3") "audio/mpeg" else "audio/mp4")
+                    .putExtra(Intent.EXTRA_TITLE, b.title.replace(Regex("[\\\\/:*?\"<>|]"), "_") + "." + kind)
+                try {
+                    startActivityForResult(i, REQ_MERGE)
+                } catch (e: Exception) {
+                    toast("Nie mogę otworzyć zapisu pliku")
+                }
+            }, lp(top = 12))
+        }
+    }
+
+    private fun runMerge(b: Book, kind: String, dest: Uri) {
+        var label: TextView? = null
+        val dlg = sheet("Scalanie") { col, _ ->
+            val t = tv("Przygotowuję…", 15f)
+            label = t
+            col.addView(t, lp(top = 10))
+            col.addView(tv("Nie zamykaj aplikacji. Duże książki mogą zająć kilka minut.", 13f, color = dim), lp(top = 8))
+        }
+        dlg.setCancelable(false)
+        Thread {
+            val err = try {
+                val status: (String) -> Unit = { m -> h.post { label?.text = m } }
+                if (kind == "mp3") Merger.mergeMp3(this, b, dest, status) else Merger.mergeM4b(this, b, dest, status)
+                null
+            } catch (e: Throwable) {
+                e.message ?: "nieznany błąd"
+            }
+            h.post {
+                dlg.dismiss()
+                if (err == null) {
+                    toast("Gotowe – scalony plik zapisany")
+                    rescan()
+                } else {
+                    try {
+                        contentResolver.delete(dest, null, null)
+                    } catch (e: Exception) {
+                    }
+                    sheet("Scalanie nieudane") { col, _ -> col.addView(tv(err, 15f), lp(top = 10)) }
+                }
+            }
+        }.start()
     }
 
     // ------------------------------------------------------------ ustawienia
@@ -918,9 +1035,19 @@ class MainActivity : Activity() {
         seg(col, "Cofnij trochę po pauzie", listOf("Tak" to Store.autorewind, "Nie" to !Store.autorewind)) { n ->
             Store.autorewind = n == 0; Store.saveState(); render()
         }
-        seg(col, "Kolory", listOf("Czarne na białym" to !Store.invert, "Białe na czarnym" to Store.invert)) { n ->
-            Store.invert = n == 1; Store.saveState(); render()
+        seg(col, "Pomijaj ciszę", listOf("Tak" to Store.skipSilence, "Nie" to !Store.skipSilence)) { n ->
+            Store.skipSilence = n == 0; Store.saveState(); render()
         }
+        val boosts = listOf(0, 3, 6, 10)
+        seg(col, "Wzmocnienie głośności", boosts.map { (if (it == 0) "Brak" else "+$it dB") to (it == Store.boost) }) { n ->
+            Store.boost = boosts[n]; Store.saveState(); render()
+        }
+        seg(col, "Kolory", listOf("Czarne na białym" to !Store.invert, "Białe na czarnym" to Store.invert)) { n ->
+            Store.invert = n == 1; Store.saveState(); PlayerWidget.update(this, controller); render()
+        }
+
+        col.addView(tv("Widżet", 17f, true), lp(top = 24))
+        col.addView(tv("Na ekranie głównym przytrzymaj puste miejsce → Widżety → Audioteka. Widżet ma okładkę, rozdział i przyciski. Działa w launcherach, które obsługują widżety.", 14f, color = dim), lp(top = 6))
 
         col.addView(tv("Statystyki słuchania", 17f, true), lp(top = 24))
         var week = 0L
@@ -943,6 +1070,7 @@ class MainActivity : Activity() {
         col.addView(btn(if (scanning) "Przeszukuję…" else "Przeszukaj foldery ponownie") { rescan() }, lp(top = 22))
 
         col.addView(tv("Aktualizacje", 17f, true), lp(top = 26))
+        col.addView(btn("Instrukcja: jak zaktualizować aplikację") { screen = "help"; render() }, lp(top = 8))
         item(col, tv("Zainstalowana wersja", 15f), tv(versionName(), 15f, true))
         if (Store.ghToken.isBlank()) {
             col.addView(tv("Wklej token GitHub (ten sam co w Termuksie). Aplikacja będzie sama sprawdzać i instalować nowe wersje.", 13f, color = dim), lp(top = 8))
@@ -978,34 +1106,84 @@ class MainActivity : Activity() {
         col.addView(tv("Audioteka ${versionName()} · słuchanie działa bez internetu", 12f, color = dim), lp(top = 16))
     }
 
-    // ------------------------------------------------------------ foldery i skanowanie
-    @Suppress("DEPRECATION")
-    private fun pickFolder() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-        )
+    // ------------------------------------------------------------ instrukcja
+    private val UPDATE_CMD =
+        "cd ~ && unzip -o \"\$(ls -t ~/storage/downloads/Audioteka*.zip | head -1)\" && cd Audioteka && git add -A && " +
+            "git -c user.name=ja -c user.email=ja@x.pl commit -m aktualizacja && git push"
+    private val TOKEN_CMD =
+        "cd ~/Audioteka && git remote set-url origin https://Bartoszelek:NOWY_TOKEN@github.com/${Updater.REPO}.git"
+
+    private fun copy(text: String) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("Audioteka", text))
+        toast("Skopiowano – wklej w Termuksie")
+    }
+
+    private fun openUrl(url: String) {
         try {
-            startActivityForResult(i, REQ_FOLDER)
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (e: Exception) {
-            toast("Nie mogę otworzyć wyboru folderu")
+            toast("Nie mogę otworzyć przeglądarki")
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        @Suppress("DEPRECATION")
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_FOLDER || resultCode != Activity.RESULT_OK) return
-        val uri = data?.data ?: return
-        try {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: Exception) {
+    private fun openTermux() {
+        val i = packageManager.getLaunchIntentForPackage("com.termux")
+        if (i != null) startActivity(i) else toast("Termux nie jest zainstalowany (F-Droid)")
+    }
+
+    private fun code(col: LinearLayout, cmd: String) {
+        val t = tv(cmd, 13f).apply {
+            typeface = Typeface.MONOSPACE
+            background = border(1, 6)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setTextIsSelectable(true)
         }
-        val s = uri.toString()
-        if (s !in Store.folders) Store.folders.add(s)
-        Store.saveState()
-        screen = "lib"
-        rescan()
+        col.addView(t, lp(top = 8))
+        col.addView(btn("Kopiuj polecenie", size = 14f) { copy(cmd) }, lp(WRAP, WRAP, top = 6))
+    }
+
+    private fun step(col: LinearLayout, n: Int, text: String) {
+        val r = hbox().apply { gravity = Gravity.TOP }
+        r.addView(tv("$n.", 15f, true), LinearLayout.LayoutParams(dp(26), WRAP))
+        r.addView(tv(text, 15f), lp(0, WRAP, 1f))
+        col.addView(r, lp(top = 10))
+    }
+
+    private fun renderHelp() {
+        val col = page()
+        col.addView(tv("‹ Ustawienia", 17f, true).apply {
+            setPadding(0, dp(8), 0, dp(8))
+            setOnClickListener { screen = "settings"; render() }
+        })
+        col.addView(tv("Jak zaktualizować Audiotekę", 26f, true), lp(top = 4))
+        col.addView(tv("Nową wersję kodu dostajesz od Claude jako plik Audioteka.zip. Telefon wysyła go na GitHub, GitHub buduje aplikację, a Audioteka sama ją pobiera.", 14f, color = dim), lp(top = 8))
+
+        col.addView(tv("Zwykła aktualizacja", 18f, true), lp(top = 22))
+        step(col, 1, "Pobierz Audioteka.zip z rozmowy z Claude do folderu Pobrane. Nie otwieraj go – wystarczy, że się pobierze.")
+        step(col, 2, "Otwórz Termux. Jeśli na początku linii nie ma znaku \$, najpierw stuknij CTRL, a potem c.")
+        col.addView(btn("Otwórz Termux") { openTermux() }, lp(WRAP, WRAP, top = 8))
+        step(col, 3, "Skopiuj to polecenie i wklej w Termuksie (przytrzymaj ekran → Paste), potem Enter:")
+        code(col, UPDATE_CMD)
+        step(col, 4, "Na końcu powinno pojawić się „main -> main”. GitHub buduje aplikację ok. 3–5 minut.")
+        col.addView(btn("Otwórz budowanie na GitHubie") { openUrl("https://github.com/${Updater.REPO}/actions") }, lp(WRAP, WRAP, top = 8))
+        step(col, 5, "Gdy jest zielony ptaszek, otwórz Audiotekę. Pojawi się ramka „Nowa wersja” – stuknij Zainstaluj i potwierdź. Możesz też wejść w Ustawienia → Sprawdź aktualizacje.")
+
+        col.addView(tv("Gdy coś pójdzie nie tak", 18f, true), lp(top = 24))
+        step(col, 1, "Czerwony krzyżyk na GitHubie: stuknij build → build → Build debug APK, przewiń w górę do linijek zaczynających się od „e:” i wyślij ich zrzut Claude.")
+        step(col, 2, "Termux pisze „nothing to commit”: wgrałeś ten sam plik co poprzednio – pobierz nowy Audioteka.zip.")
+        step(col, 3, "Termux pyta o hasło albo pisze „Authentication failed”: token wygasł. Zrób nowy, potem w Termuksie wklej to polecenie, wpisując nowy token w miejsce NOWY_TOKEN:")
+        col.addView(btn("Otwórz stronę tokenów GitHub") { openUrl("https://github.com/settings/tokens/new") }, lp(WRAP, WRAP, top = 8))
+        code(col, TOKEN_CMD)
+        step(col, 4, "Audioteka pisze „Token jest nieprawidłowy”: w Ustawieniach usuń token i wklej nowy (zaznacz przy tworzeniu: repo i workflow).")
+        step(col, 5, "Android blokuje instalację: zezwól Audiotece na instalowanie aplikacji (telefon sam pokaże ten przełącznik) i stuknij Zainstaluj jeszcze raz.")
+
+        col.addView(tv("Nowy telefon albo reset", 18f, true), lp(top = 24))
+        step(col, 1, "Zainstaluj Termux z F-Droid, w Termuksie wpisz: termux-setup-storage oraz pkg install git unzip.")
+        step(col, 2, "Pobierz projekt z GitHuba (podmień NOWY_TOKEN):")
+        code(col, "cd ~ && git clone https://Bartoszelek:NOWY_TOKEN@github.com/${Updater.REPO}.git Audioteka")
+        step(col, 3, "Najnowszy plik APK pobierzesz z GitHuba: repozytorium → Releases → audioteka.apk.")
+        col.addView(btn("Otwórz wydania (Releases)") { openUrl("https://github.com/${Updater.REPO}/releases") }, lp(WRAP, WRAP, top = 8))
     }
 
     // ------------------------------------------------------------ aktualizacje
@@ -1122,6 +1300,48 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------ foldery i skanowanie
+    @Suppress("DEPRECATION")
+    private fun pickFolder() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        )
+        try {
+            startActivityForResult(i, REQ_FOLDER)
+        } catch (e: Exception) {
+            toast("Nie mogę otworzyć wyboru folderu")
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != Activity.RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            REQ_FOLDER -> {
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (e: Exception) {
+                }
+                val s = uri.toString()
+                if (s !in Store.folders) Store.folders.add(s)
+                Store.saveState()
+                screen = "lib"
+                rescan()
+            }
+            REQ_COVER -> {
+                val b = Store.book(pendingBookId) ?: return
+                saveCoverFrom(b, uri.toString())
+            }
+            REQ_MERGE -> {
+                val b = Store.book(pendingBookId) ?: return
+                runMerge(b, pendingKind, uri)
+            }
+        }
+    }
+
     private fun rescan() {
         if (scanning) return
         scanning = true
@@ -1139,7 +1359,11 @@ class MainActivity : Activity() {
                 null
             }
             h.post {
-                if (list != null) Store.saveLibrary(list)
+                if (list != null) {
+                    Store.saveLibrary(list)
+                    Covers.clear()
+                    cur?.let { c -> cur = Store.book(c.id) ?: c }
+                }
                 scanning = false
                 render()
             }

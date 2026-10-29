@@ -11,6 +11,12 @@ Samodzielna aplikacja na Androida: bez Chrome, bez Termuksa w tle, działa offli
 - wyłącznik czasowy (5–60 min lub koniec rozdziału), potrząśnięcie = od nowa, wyciszanie na końcu
 - zakładki z notatkami, lista rozdziałów, okładki (cover.jpg lub wbudowane) w odcieniach szarości
 - statystyki słuchania, ukrywanie pozycji, tryb białe na czarnym
+- rozdziały wbudowane w pliki (M4B/M4A: chpl i ścieżka rozdziałów, MP3: ID3 CHAP)
+- pomijanie ciszy i wzmocnienie głośności (+3/+6/+10 dB)
+- powiadomienie i ekran blokady: rozdział wstecz/naprzód, przewijanie, pauza
+- widżet na ekran główny (okładka, rozdział, 5 przycisków)
+- scalanie części w jeden plik MP3 lub M4B z rozdziałami
+- okładki: z folderu, z pliku, z galerii, z internetu (Google Books, Open Library) albo generowane
 
 ## Budowanie (tak samo jak E-ink Launcher)
 1. Na github.com utwórz nowe, puste, prywatne repozytorium `audioteka`.

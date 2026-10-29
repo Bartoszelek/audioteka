@@ -5,6 +5,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 
@@ -127,6 +128,20 @@ object Scanner {
             } catch (e: Exception) {
             }
         }
+        val chapCache = HashMap<String, List<Chapters.C>>()
+        Store.read("chap.json")?.let {
+            try {
+                val o = JSONObject(it)
+                for (k in o.keys()) {
+                    val a = o.getJSONArray(k)
+                    chapCache[k] = (0 until a.length()).map { n ->
+                        val x = a.getJSONArray(n)
+                        Chapters.C(x.getLong(0), x.getString(1))
+                    }
+                }
+            } catch (e: Exception) {
+            }
+        }
         val groups = LinkedHashMap<String, Group>()
         val images = HashMap<String, List<Doc>>()
         var count = 0
@@ -183,22 +198,41 @@ object Scanner {
         var n = 0
         for ((key, g) in groups) {
             val files = g.files.sortedWith(compareBy(natCmp) { it.rel })
-            val durs = files.map { d ->
+            val chs = ArrayList<Chap>()
+            val durs = files.mapIndexed { fi, d ->
                 n++
-                if (n % 3 == 0) status("Sprawdzam długość nagrań… $n/$count")
+                if (n % 3 == 0) status("Sprawdzam nagrania… $n/$count")
                 val k = "${d.uri}|${d.size}|${d.mtime}"
+                val emb = chapCache.getOrPut(k) { Chapters.read(ctx, d.uri, ext(d.name)) }
+                if (emb.size >= 2) emb.forEach { chs.add(Chap(fi, it.start, it.title)) }
+                else chs.add(Chap(fi, 0, base(d.name)))
                 cache.getOrPut(k) { duration(ctx, d.uri) }
             }
+            val imgs = ArrayList<String>()
+            for (dirId in g.dirIds) {
+                val list = images[dirId] ?: continue
+                list.sortedWith(compareBy(natCmp) { it.name }).forEach {
+                    if (g.folderOk || base(it.name).lowercase() in COVER_NAMES) imgs.add(it.uri.toString())
+                }
+            }
+            if (files.isNotEmpty()) imgs.add("emb:" + files.first().uri.toString())
             out.add(
                 Book(
                     sha(key), g.title, files.map { it.uri.toString() }, files.map { base(it.name) },
-                    durs, pickCover(g, images, files)
+                    durs, pickCover(g, images, files), imgs.distinct(), chs
                 )
             )
         }
         val o = JSONObject()
         for ((k, v) in cache) o.put(k, v)
         Store.write("dur.json", o.toString())
+        val oc = JSONObject()
+        for ((k, v) in chapCache) {
+            val a = JSONArray()
+            for (c in v) a.put(JSONArray().put(c.start).put(c.title))
+            oc.put(k, a)
+        }
+        Store.write("chap.json", oc.toString())
         return out.sortedWith(compareBy(natCmp) { it.title })
     }
 
