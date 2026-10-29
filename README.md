@@ -1,0 +1,29 @@
+# Audioteka – odtwarzacz audiobooków (e-ink)
+
+Samodzielna aplikacja na Androida: bez Chrome, bez Termuksa w tle, działa offline.
+
+## Funkcje
+- wybór folderów z audiobookami (systemowe okno Androida), skanowanie tylko w nich
+- podfolder = książka; części CD1/CD2… łączone w jedną; luźne pliki grupowane po nazwie
+- pamięta miejsce w każdej książce, „Słuchaj dalej”, zakładki W trakcie / Nowe / Ukończone, wyszukiwarka
+- odtwarzanie w tle, powiadomienie i sterowanie z ekranu blokady / słuchawek
+- prędkość 0,5–3× (co 0,05), przeskoki 10–60 s, cofanie po pauzie
+- wyłącznik czasowy (5–60 min lub koniec rozdziału), potrząśnięcie = od nowa, wyciszanie na końcu
+- zakładki z notatkami, lista rozdziałów, okładki (cover.jpg lub wbudowane) w odcieniach szarości
+- statystyki słuchania, ukrywanie pozycji, tryb białe na czarnym
+
+## Budowanie (tak samo jak E-ink Launcher)
+1. Na github.com utwórz nowe, puste, prywatne repozytorium `audioteka`.
+2. W Termuksie (zamień `TWOJ_LOGIN`; hasło = token GitHub z uprawnieniami repo + workflow):
+```
+cd ~ && unzip -o ~/storage/downloads/Audioteka.zip && cd Audioteka
+git init && git add . && git -c user.name=ja -c user.email=ja@x.pl commit -m start
+git branch -M main
+git remote add origin https://github.com/TWOJ_LOGIN/audioteka.git
+git push -u origin main
+```
+3. github.com → repozytorium → Actions → Build APK → po kilku minutach Artifacts → `Audioteka-apk`.
+4. Rozpakuj i zainstaluj APK (albo przez Shizuku / ADB jak launcher).
+
+Kolejne wersje: podmień pliki, potem `git add . && git commit -m zmiany && git push`.
+Podpis: `app/audioteka.keystore` (hasło `audioteka`) – aktualizacje instalują się na starą wersję.
