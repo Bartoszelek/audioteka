@@ -1139,7 +1139,7 @@ class MainActivity : Activity() {
                 null
             }
             h.post {
-                if (list != null) Store.setBooks(list)
+                if (list != null) Store.saveLibrary(list)
                 scanning = false
                 render()
             }

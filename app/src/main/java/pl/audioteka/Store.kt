@@ -178,7 +178,7 @@ object Store {
         }
     }
 
-    fun setBooks(list: List<Book>) {
+    fun saveLibrary(list: List<Book>) {
         books = list
         val a = JSONArray()
         for (b in list) {
