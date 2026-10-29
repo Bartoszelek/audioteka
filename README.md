@@ -25,5 +25,13 @@ git push -u origin main
 3. github.com → repozytorium → Actions → Build APK → po kilku minutach Artifacts → `Audioteka-apk`.
 4. Rozpakuj i zainstaluj APK (albo przez Shizuku / ADB jak launcher).
 
-Kolejne wersje: podmień pliki, potem `git add . && git commit -m zmiany && git push`.
+## Aktualizacje
+**W aplikacji:** Ustawienia → Aktualizacje → wklej token GitHub. Audioteka sama sprawdza przy starcie,
+czy jest nowa wersja, pokazuje „Nowa wersja” i instaluje ją jednym stuknięciem (GitHub publikuje każdy
+build jako Release `build-N`, numer wersji rośnie automatycznie).
+
+**Wysłanie nowej wersji kodu (Termux)** – pobierz nowy Audioteka.zip i wklej:
+```
+cd ~ && unzip -o "$(ls -t ~/storage/downloads/Audioteka*.zip | head -1)" && cd Audioteka && git add -A && git -c user.name=ja -c user.email=ja@x.pl commit -m aktualizacja && git push
+```
 Podpis: `app/audioteka.keystore` (hasło `audioteka`) – aktualizacje instalują się na starą wersję.

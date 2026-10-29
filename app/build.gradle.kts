@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+
 android {
     namespace = "pl.audioteka"
     compileSdk = 35
@@ -11,8 +13,8 @@ android {
         applicationId = "pl.audioteka"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = runNumber
+        versionName = "1.$runNumber"
     }
 
     signingConfigs {

@@ -40,6 +40,7 @@ object Store {
     var fwd = 30
     var autorewind = true
     var invert = false
+    var ghToken = ""
 
     @Volatile var books: List<Book> = emptyList()
     private val progress = HashMap<String, Progress>()
@@ -122,6 +123,7 @@ object Store {
         o.put("fwd", fwd)
         o.put("autorewind", autorewind)
         o.put("invert", invert)
+        o.put("ghToken", ghToken)
         o.put("hidden", JSONArray(hidden.toList()))
         o.put("statTotal", statTotal)
         val sd = JSONObject()
@@ -152,6 +154,7 @@ object Store {
             fwd = o.optInt("fwd", 30)
             autorewind = o.optBoolean("autorewind", true)
             invert = o.optBoolean("invert", false)
+            ghToken = o.optString("ghToken", "")
             o.optJSONArray("hidden")?.let { a -> for (n in 0 until a.length()) hidden.add(a.getString(n)) }
             statTotal = o.optLong("statTotal", 0)
             o.optJSONObject("statDays")?.let { d -> for (k in d.keys()) statDays[k] = d.optLong(k) }

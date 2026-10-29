@@ -3,8 +3,10 @@ package pl.audioteka
 import android.Manifest
 import android.app.Activity
 import android.app.Dialog
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
@@ -21,6 +23,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -46,17 +49,22 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import com.google.common.util.concurrent.ListenableFuture
+import java.io.File
 import java.util.Locale
+import java.util.concurrent.Future
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     private val REQ_FOLDER = 42
+    private val ACTION_INSTALL = "pl.audioteka.INSTALL_RESULT"
+    private var update: Updater.Info? = null
+    private var updMsg = ""
+    private var updStatus: TextView? = null
 
     private var controller: MediaController? = null
-    private var future: ListenableFuture<MediaController>? = null
+    private var future: Future<MediaController>? = null
     private lateinit var root: FrameLayout
     private val h = Handler(Looper.getMainLooper())
     private val io = Executors.newFixedThreadPool(2)
@@ -99,6 +107,13 @@ class MainActivity : Activity() {
         ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         render()
         if (Store.books.isEmpty() && Store.folders.isNotEmpty()) rescan()
+        handleInstall(intent)
+        checkUpdate(false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleInstall(intent)
     }
 
     override fun onStart() {
@@ -306,6 +321,7 @@ class MainActivity : Activity() {
         root.removeAllViews()
         vChapter = null; vSeek = null; vCur = null; vDur = null; vLeft = null; vPP = null; vSleep = null; vSpeed = null
         statusView = null
+        updStatus = null
         when (screen) {
             "player" -> renderPlayer()
             "settings" -> renderSettings()
@@ -331,6 +347,18 @@ class MainActivity : Activity() {
         head.addView(tv("Audioteka", 28f, true), lp(0, WRAP, 1f))
         head.addView(icon(R.drawable.ic_settings, 30) { screen = "settings"; render() })
         col.addView(head)
+        val upd = update
+        if (upd != null) {
+            val box = hbox().apply {
+                background = border(3, 14)
+                setPadding(dp(14), dp(10), dp(10), dp(10))
+            }
+            val st = tv(if (updMsg.startsWith("Pobieram") || updMsg.startsWith("Błąd") || updMsg.startsWith("Potwierdź")) updMsg else "Nowa wersja 1.${upd.number}", 15f, true)
+            updStatus = st
+            box.addView(st, lp(0, WRAP, 1f))
+            box.addView(btn("Zainstaluj", size = 14f) { installUpdate() })
+            col.addView(box, lp(top = 12))
+        }
 
         if (Store.folders.isEmpty()) {
             emptyBox(col, "Wybierz folder z audiobookami.", "Aplikacja będzie szukać nagrań tylko w nim.", "Wybierz folder") { pickFolder() }
@@ -380,7 +408,7 @@ class MainActivity : Activity() {
             setTextColor(fg)
             setHintTextColor(dim)
             textSize = 16f
-            isSingleLine = true
+            setSingleLine(true)
             background = border()
             setPadding(dp(12), dp(10), dp(12), dp(10))
             addTextChangedListener(object : TextWatcher {
@@ -913,7 +941,41 @@ class MainActivity : Activity() {
         }
 
         col.addView(btn(if (scanning) "Przeszukuję…" else "Przeszukaj foldery ponownie") { rescan() }, lp(top = 22))
-        col.addView(tv("Audioteka 1.0 · działa bez internetu", 12f, color = dim), lp(top = 16))
+
+        col.addView(tv("Aktualizacje", 17f, true), lp(top = 26))
+        item(col, tv("Zainstalowana wersja", 15f), tv(versionName(), 15f, true))
+        if (Store.ghToken.isBlank()) {
+            col.addView(tv("Wklej token GitHub (ten sam co w Termuksie). Aplikacja będzie sama sprawdzać i instalować nowe wersje.", 13f, color = dim), lp(top = 8))
+            val e = EditText(this).apply {
+                hint = "ghp_…"
+                setTextColor(fg)
+                setHintTextColor(dim)
+                background = border()
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+            }
+            col.addView(e, lp(top = 8))
+            col.addView(btn("Zapisz token") {
+                Store.ghToken = e.text.toString().trim()
+                Store.saveState()
+                checkUpdate(true)
+            }, lp(top = 8))
+        } else {
+            item(col, tv("Token GitHub zapisany", 15f), btn("Usuń", size = 13f) {
+                Store.ghToken = ""
+                Store.saveState()
+                update = null
+                updMsg = ""
+                render()
+            })
+            val st = tv(updMsg, 14f, color = dim)
+            updStatus = st
+            if (updMsg.isNotEmpty()) col.addView(st, lp(top = 8))
+            val upd = update
+            if (upd != null) col.addView(btn("Pobierz i zainstaluj 1.${upd.number}") { installUpdate() }, lp(top = 8))
+            else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(top = 8))
+        }
+        col.addView(tv("Audioteka ${versionName()} · słuchanie działa bez internetu", 12f, color = dim), lp(top = 16))
     }
 
     // ------------------------------------------------------------ foldery i skanowanie
@@ -944,6 +1006,120 @@ class MainActivity : Activity() {
         Store.saveState()
         screen = "lib"
         rescan()
+    }
+
+    // ------------------------------------------------------------ aktualizacje
+    private fun installedVersion(): Long = try {
+        packageManager.getPackageInfo(packageName, 0).longVersionCode
+    } catch (e: Exception) {
+        0L
+    }
+
+    private fun versionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
+    }
+
+    private fun checkUpdate(manual: Boolean) {
+        val token = Store.ghToken
+        if (token.isBlank()) {
+            if (manual) toast("Najpierw wklej token GitHub")
+            return
+        }
+        if (manual) {
+            updMsg = "Sprawdzam…"
+            render()
+        }
+        Thread {
+            val res: Pair<Updater.Info?, String> = try {
+                val i = Updater.check(token)
+                if (i != null && i.number > installedVersion()) Pair(i, "Dostępna wersja 1.${i.number}")
+                else Pair(null, "Masz najnowszą wersję")
+            } catch (e: Exception) {
+                Pair(null, "Błąd: " + (e.message ?: "brak połączenia"))
+            }
+            h.post {
+                update = res.first
+                if (manual || res.first != null) {
+                    updMsg = res.second
+                    render()
+                }
+            }
+        }.start()
+    }
+
+    private fun installUpdate() {
+        val info = update ?: return
+        if (!packageManager.canRequestPackageInstalls()) {
+            toast("Zezwól Audiotece na instalowanie aplikacji, potem wróć i stuknij ponownie")
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+            }
+            return
+        }
+        updMsg = "Pobieram… 0%"
+        render()
+        val file = File(cacheDir, "update.apk")
+        Thread {
+            try {
+                Updater.download(Store.ghToken, info, file) { p ->
+                    h.post {
+                        updMsg = "Pobieram… $p%"
+                        updStatus?.text = updMsg
+                    }
+                }
+                installApk(file)
+                h.post {
+                    updMsg = "Potwierdź instalację"
+                    updStatus?.text = updMsg
+                }
+            } catch (e: Exception) {
+                h.post {
+                    updMsg = "Błąd: " + (e.message ?: "pobieranie nieudane")
+                    render()
+                }
+            }
+        }.start()
+    }
+
+    private fun installApk(file: File) {
+        val pi = packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        val id = pi.createSession(params)
+        val session = pi.openSession(id)
+        try {
+            session.openWrite("audioteka", 0, file.length()).use { out ->
+                file.inputStream().use { it.copyTo(out) }
+                session.fsync(out)
+            }
+            val i = Intent(this, MainActivity::class.java).setAction(ACTION_INSTALL)
+            val pend = PendingIntent.getActivity(
+                this, 7, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            )
+            session.commit(pend.intentSender)
+        } finally {
+            session.close()
+        }
+    }
+
+    private fun handleInstall(i: Intent?) {
+        if (i == null || i.action != ACTION_INSTALL) return
+        when (i.getIntExtra(PackageInstaller.EXTRA_STATUS, -999)) {
+            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                @Suppress("DEPRECATION")
+                val confirm = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                if (confirm != null) startActivity(confirm)
+            }
+            PackageInstaller.STATUS_SUCCESS -> toast("Zaktualizowano")
+            -999 -> {}
+            else -> {
+                val msg = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "nieznany błąd"
+                updMsg = "Instalacja nieudana: $msg"
+                render()
+            }
+        }
     }
 
     private fun rescan() {
