@@ -330,7 +330,13 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------ ekrany
+    private var lastView = ""
+
+    /** Przerysowuje ekran, zachowując miejsce przewinięcia (żeby po kliknięciu nie skakało na górę). */
     private fun render() {
+        val key = "$screen|${cur?.id}"
+        val oldY = if (key == lastView) (root.getChildAt(0) as? ScrollView)?.scrollY ?: 0 else 0
+        lastView = key
         applyWindow()
         root.removeAllViews()
         vChapter = null; vSeek = null; vCur = null; vDur = null; vLeft = null; vPP = null; vSleep = null; vSpeed = null
@@ -342,6 +348,7 @@ class MainActivity : Activity() {
             "help" -> renderHelp()
             else -> renderLib()
         }
+        if (oldY > 0) (root.getChildAt(0) as? ScrollView)?.let { sv -> sv.post { sv.scrollTo(0, oldY) } }
     }
 
     private fun emptyBox(col: LinearLayout, title: String, sub: String, action: String, onClick: () -> Unit) {
