@@ -995,7 +995,7 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------ ustawienia
     private fun seg(col: LinearLayout, label: String, opts: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
         col.addView(tv(label, 15f), lp(top = 14))
-        val r = hbox()
+        val r = hbox().apply { gravity = Gravity.TOP }
         opts.forEachIndexed { n, (text, sel) ->
             r.addView(btn(text, sel, 14f) { onPick(n) }, lp(WRAP, WRAP, top = 6).apply { rightMargin = dp(6) })
         }
