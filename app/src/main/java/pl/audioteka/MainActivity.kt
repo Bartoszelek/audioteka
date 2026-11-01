@@ -93,9 +93,12 @@ class MainActivity : Activity() {
     private var spanStart = 0L
     private var spanEnd = 0L
 
-    private val fg get() = if (Store.invert) Color.WHITE else Color.BLACK
-    private val bg get() = if (Store.invert) Color.BLACK else Color.WHITE
-    private val dim get() = if (Store.invert) Color.rgb(170, 170, 170) else Color.rgb(85, 85, 85)
+    private val fg get() = if (!Store.eink) Theme.fg else if (Store.invert) Color.WHITE else Color.BLACK
+    private val bg get() = if (!Store.eink) Theme.bg else if (Store.invert) Color.BLACK else Color.WHITE
+    private val dim get() = if (!Store.eink) Theme.dim else if (Store.invert) Color.rgb(170, 170, 170) else Color.rgb(85, 85, 85)
+    private val surface get() = if (Store.eink) bg else Theme.surface
+    private val lineC get() = if (Store.eink) fg else Theme.line
+    private val accent get() = if (Store.eink) fg else Theme.accent
     private val gray = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
 
     // ------------------------------------------------------------ cykl życia
@@ -188,15 +191,20 @@ class MainActivity : Activity() {
             if (bold) typeface = Typeface.DEFAULT_BOLD
         }
 
-    private fun border(stroke: Int = 2, radius: Int = 10, fill: Int = bg) = GradientDrawable().apply {
+    private fun border(stroke: Int = 2, radius: Int = 10, fill: Int = surface) = GradientDrawable().apply {
         setColor(fill)
-        setStroke(dp(stroke), fg)
-        cornerRadius = dp(radius).toFloat()
+        if (Store.eink) {
+            setStroke(dp(stroke), fg)
+            cornerRadius = dp(radius).toFloat()
+        } else {
+            if (stroke > 0 && fill == surface) setStroke(1, lineC)
+            cornerRadius = dp(radius).toFloat() * 1.5f
+        }
     }
 
     private fun btn(text: String, selected: Boolean = false, size: Float = 15f, onClick: () -> Unit): TextView =
-        tv(text, size, true, if (selected) bg else fg).apply {
-            background = border(fill = if (selected) fg else bg)
+        tv(text, size, true, if (selected) (if (Store.eink) bg else Color.WHITE) else fg).apply {
+            background = border(fill = if (selected) accent else surface)
             setPadding(dp(12), dp(10), dp(12), dp(10))
             gravity = Gravity.CENTER
             setOnClickListener { onClick() }
@@ -219,8 +227,8 @@ class MainActivity : Activity() {
         LinearLayout.LayoutParams(w, hh, weight).apply { topMargin = dp(top) }
 
     private fun line() = View(this).apply {
-        setBackgroundColor(fg)
-        layoutParams = LinearLayout.LayoutParams(MATCH, dp(1))
+        setBackgroundColor(lineC)
+        layoutParams = LinearLayout.LayoutParams(MATCH, if (Store.eink) dp(1) else 1)
     }
 
     private fun page(): LinearLayout {
@@ -233,11 +241,21 @@ class MainActivity : Activity() {
         return col
     }
 
-    private fun bar(pct: Int): View {
+    private fun bar(pct: Int, onHero: Boolean = false): View {
         val o = LinearLayout(this)
-        o.background = border(1, 0)
-        o.setPadding(dp(1), dp(1), dp(1), dp(1))
-        o.addView(View(this).apply { setBackgroundColor(fg) },
+        if (Store.eink) {
+            o.background = border(1, 0)
+            o.setPadding(dp(1), dp(1), dp(1), dp(1))
+        } else {
+            o.background = GradientDrawable().apply {
+                setColor(if (onHero) Theme.withAlpha(Color.WHITE, 0.3f) else lineC); cornerRadius = dp(3).toFloat()
+            }
+            o.clipToOutline = true
+        }
+        o.addView(View(this).apply {
+            if (Store.eink) setBackgroundColor(fg)
+            else background = GradientDrawable().apply { setColor(if (onHero) Color.WHITE else accent); cornerRadius = dp(3).toFloat() }
+        },
             LinearLayout.LayoutParams(0, dp(4), maxOf(pct, 0).toFloat() + 0.001f))
         o.addView(View(this), LinearLayout.LayoutParams(0, dp(4), maxOf(100 - pct, 0).toFloat() + 0.001f))
         return o
@@ -261,11 +279,12 @@ class MainActivity : Activity() {
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     private fun applyWindow() {
+        if (!Store.eink) Theme.apply(this, Store.theme, Store.mode)
         root.setBackgroundColor(bg)
         window.statusBarColor = bg
         window.navigationBarColor = bg
         @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = if (Store.invert) 0 else
+        window.decorView.systemUiVisibility = if ((Store.eink && Store.invert) || (!Store.eink && Theme.dark)) 0 else
             (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR)
     }
 
@@ -273,12 +292,15 @@ class MainActivity : Activity() {
     private fun coverView(b: Book, sizeDp: Int): View {
         val f = FrameLayout(this)
         f.background = border(2, 6)
-        f.setPadding(dp(2), dp(2), dp(2), dp(2))
+        if (Store.eink) f.setPadding(dp(2), dp(2), dp(2), dp(2)) else {
+            f.clipToOutline = true
+            f.elevation = dp(if (sizeDp > 120) 8 else 2).toFloat()
+        }
         val letter = tv(b.title.trim().take(1).uppercase(), sizeDp / 2.6f, true).apply { gravity = Gravity.CENTER }
         f.addView(letter, FrameLayout.LayoutParams(MATCH, MATCH))
         val iv = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            colorFilter = gray
+            if (Store.eink) colorFilter = gray
             tag = b.id
         }
         f.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -297,7 +319,7 @@ class MainActivity : Activity() {
         val f = FrameLayout(this)
         f.background = border(2, 6)
         f.setPadding(dp(2), dp(2), dp(2), dp(2))
-        val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; colorFilter = gray }
+        val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; if (Store.eink) colorFilter = gray }
         f.addView(iv, FrameLayout.LayoutParams(MATCH, dp(sizeDp)))
         f.setOnClickListener { onClick() }
         io.execute {
@@ -372,20 +394,28 @@ class MainActivity : Activity() {
 
         val last = Store.lastBook()
         if (last != null) {
+            val hero = !Store.eink
             val card = hbox().apply {
-                background = border(3, 14)
+                background = if (hero) Theme.gradient(dp(24).toFloat()) else border(3, 14)
+                if (hero) elevation = dp(4).toFloat()
                 setPadding(dp(14), dp(14), dp(14), dp(14))
                 gravity = Gravity.TOP
             }
             card.addView(coverView(last, 84))
             val t = vbox()
-            t.addView(tv(last.title, 18f, true).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
+            val heroText = if (hero) Color.WHITE else fg
+            t.addView(tv(last.title, 18f, true, heroText).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
             val p = Store.peek(last.id)
-            t.addView(tv(Ch.label(last, Ch.index(last, p.i, p.pos)), 13f, color = dim).apply {
+            t.addView(tv(Ch.label(last, Ch.index(last, p.i, p.pos)), 13f, color = if (hero) Theme.withAlpha(Color.WHITE, 0.85f) else dim).apply {
                 maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             })
-            t.addView(bar(Store.pct(last)), lp(top = 8))
-            t.addView(btn("Słuchaj dalej") { openBook(last, true) }, lp(top = 10))
+            t.addView(bar(Store.pct(last), hero), lp(top = 8))
+            t.addView(if (hero) tv("▶  Słuchaj dalej", 15f, true, Theme.accent).apply {
+                background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(14).toFloat() }
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                gravity = Gravity.CENTER
+                setOnClickListener { openBook(last, true) }
+            } else btn("Słuchaj dalej") { openBook(last, true) }, lp(top = 10))
             card.addView(t, lp(0, WRAP, 1f).apply { leftMargin = dp(14) })
             col.addView(card, lp(top = 14))
         }
@@ -532,9 +562,9 @@ class MainActivity : Activity() {
 
         val seek = SeekBar(this).apply {
             max = 1000
-            progressTintList = ColorStateList.valueOf(fg)
-            thumbTintList = ColorStateList.valueOf(fg)
-            progressBackgroundTintList = ColorStateList.valueOf(dim)
+            progressTintList = ColorStateList.valueOf(accent)
+            thumbTintList = ColorStateList.valueOf(accent)
+            progressBackgroundTintList = ColorStateList.valueOf(if (Store.eink) dim else lineC)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {}
                 override fun onStartTrackingTouch(s: SeekBar?) {
@@ -568,28 +598,29 @@ class MainActivity : Activity() {
 
         fun labeled(res: Int, label: String, onClick: () -> Unit): View {
             val v = vbox().apply { gravity = Gravity.CENTER_HORIZONTAL; setOnClickListener { onClick() } }
-            v.addView(icon(res, 30))
+            v.addView(icon(res, 30).apply { setColorFilter(accent) })
             v.addView(tv(label, 12f, true))
             return v
         }
-        cell(icon(R.drawable.ic_prev, 30) { activeController()?.let { Playback.jump(it, b, -1) } })
+        cell(icon(R.drawable.ic_prev, 30) { activeController()?.let { Playback.jump(it, b, -1) } }.apply { setColorFilter(accent) })
         cell(labeled(R.drawable.ic_back, "${Store.back} s") { seekBy(-Store.back * 1000L) })
         val ppBox = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
+            background = if (Store.eink) GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(bg)
                 setStroke(dp(3), fg)
-            }
+            } else GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Theme.accent, Theme.accent2)).apply { shape = GradientDrawable.OVAL }
+            if (!Store.eink) elevation = dp(6).toFloat()
             setOnClickListener { togglePlay() }
         }
-        val ppIcon = ImageView(this).apply { setImageResource(R.drawable.ic_play); setColorFilter(fg) }
+        val ppIcon = ImageView(this).apply { setImageResource(R.drawable.ic_play); setColorFilter(if (Store.eink) fg else Color.WHITE) }
         vPP = ppIcon
         ppBox.addView(ppIcon, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
         val ppWrap = FrameLayout(this)
         ppWrap.addView(ppBox, FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER))
         ctl.addView(ppWrap, lp(0, WRAP, 1.3f))
         cell(labeled(R.drawable.ic_fwd, "${Store.fwd} s") { seekBy(Store.fwd * 1000L) })
-        cell(icon(R.drawable.ic_next, 30) { activeController()?.let { Playback.jump(it, b, 1) } })
+        cell(icon(R.drawable.ic_next, 30) { activeController()?.let { Playback.jump(it, b, 1) } }.apply { setColorFilter(accent) })
         col.addView(ctl, lp(top = 18))
 
         val leftV = tv("", 14f, color = dim).apply { gravity = Gravity.CENTER }
@@ -604,6 +635,7 @@ class MainActivity : Activity() {
                 setPadding(dp(4), dp(10), dp(4), dp(10))
                 setOnClickListener { onClick() }
             }
+            if (icon is ImageView) icon.setColorFilter(accent)
             v.addView(icon)
             v.addView(label.apply { gravity = Gravity.CENTER })
             opts.addView(v, lp(0, WRAP, 1f).apply { leftMargin = dp(4); rightMargin = dp(4) })
@@ -657,7 +689,8 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(22))
             background = GradientDrawable().apply {
                 setColor(bg)
-                setStroke(dp(3), fg)
+                if (Store.eink) setStroke(dp(3), fg)
+                else cornerRadii = floatArrayOf(dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat(), dp(24).toFloat(), 0f, 0f, 0f, 0f)
             }
         }
         val head = hbox()
@@ -1042,8 +1075,26 @@ class MainActivity : Activity() {
         seg(col, "Wzmocnienie głośności", boosts.map { (if (it == 0) "Brak" else "+$it dB") to (it == Store.boost) }) { n ->
             Store.boost = boosts[n]; Store.saveState(); render()
         }
-        seg(col, "Kolory", listOf("Czarne na białym" to !Store.invert, "Białe na czarnym" to Store.invert)) { n ->
-            Store.invert = n == 1; Store.saveState(); PlayerWidget.update(this, controller); render()
+        seg(col, "Styl", listOf("E-ink (czarno-biały)" to Store.eink, "Kolorowy" to !Store.eink)) { n ->
+            Store.eink = n == 0; Store.saveState(); Covers.clear(); PlayerWidget.update(this, controller); render()
+        }
+        if (Store.eink) {
+            seg(col, "Kolory", listOf("Czarne na białym" to !Store.invert, "Białe na czarnym" to Store.invert)) { n ->
+                Store.invert = n == 1; Store.saveState(); PlayerWidget.update(this, controller); render()
+            }
+        } else {
+            col.addView(tv("Motyw kolorów", 15f), lp(top = 14))
+            val sw = Theme.PRESETS.filter { it.id != "auto" || Theme.hasWallpaperColors() }.map { pr ->
+                swatch(pr, Store.theme == pr.id) { Store.theme = pr.id; Store.saveState(); PlayerWidget.update(this, controller); render() }
+            }
+            for (start in sw.indices step 4) {
+                val row = hbox().apply { gravity = Gravity.TOP }
+                for (k in 0 until 4) row.addView(sw.getOrNull(start + k) ?: View(this), lp(0, WRAP, 1f))
+                col.addView(row, lp(top = 4))
+            }
+            seg(col, "Tryb", Theme.MODES.map { (id, label) -> label to (Store.mode == id) }) { n ->
+                Store.mode = Theme.MODES[n].first; Store.saveState(); PlayerWidget.update(this, controller); render()
+            }
         }
 
         col.addView(tv("Widżet", 17f, true), lp(top = 24))
@@ -1104,6 +1155,22 @@ class MainActivity : Activity() {
             else col.addView(btn("Sprawdź aktualizacje") { checkUpdate(true) }, lp(top = 8))
         }
         col.addView(tv("Audioteka ${versionName()} · słuchanie działa bez internetu", 12f, color = dim), lp(top = 16))
+    }
+
+    /** Kółko z kolorami motywu do wyboru w ustawieniach. */
+    private fun swatch(pr: Theme.Preset, selected: Boolean, onClick: () -> Unit): View {
+        val (a, b) = Theme.colorsOf(this, pr)
+        val v = vbox().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(0, dp(6), 0, dp(4)); setOnClickListener { onClick() } }
+        val ring = FrameLayout(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT); if (selected) setStroke(dp(3), fg) }
+        }
+        val dot = View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(a, b)).apply { shape = GradientDrawable.OVAL }
+        }
+        ring.addView(dot, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+        v.addView(ring, LinearLayout.LayoutParams(dp(50), dp(50)))
+        v.addView(tv(pr.name, 11f, selected, if (selected) fg else dim).apply { gravity = Gravity.CENTER; maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, lp(top = 2))
+        return v
     }
 
     // ------------------------------------------------------------ instrukcja

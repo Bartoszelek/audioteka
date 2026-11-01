@@ -38,11 +38,19 @@ class PlayerWidget : AppWidgetProvider() {
                 val ids = mgr.getAppWidgetIds(ComponentName(ctx, PlayerWidget::class.java))
                 if (ids.isEmpty()) return
                 Store.init(ctx)
-                val inv = Store.invert
-                val fg = if (inv) Color.WHITE else Color.BLACK
-                val dim = if (inv) Color.rgb(170, 170, 170) else Color.rgb(85, 85, 85)
+                val color = !Store.eink
+                if (color) Theme.apply(ctx, Store.theme, Store.mode)
+                val inv = if (color) Theme.dark else Store.invert
+                val fg = if (color) Theme.fg else if (inv) Color.WHITE else Color.BLACK
+                val dim = if (color) Theme.dim else if (inv) Color.rgb(170, 170, 170) else Color.rgb(85, 85, 85)
+                val btnColor = if (color) Theme.accent else fg
                 val v = RemoteViews(ctx.packageName, R.layout.widget)
-                v.setInt(R.id.root, "setBackgroundResource", if (inv) R.drawable.widget_bg_inv else R.drawable.widget_bg)
+                v.setInt(R.id.root, "setBackgroundResource", when {
+                    color && inv -> R.drawable.widget_bg_color_dark
+                    color -> R.drawable.widget_bg_color
+                    inv -> R.drawable.widget_bg_inv
+                    else -> R.drawable.widget_bg
+                })
                 val b = Store.book(Playback.bookIdOf(p)) ?: Store.lastBook()
                 if (b == null) {
                     v.setTextViewText(R.id.title, "Audioteka")
@@ -55,12 +63,12 @@ class PlayerWidget : AppWidgetProvider() {
                     val pos = if (active) p!!.currentPosition else pr.pos
                     v.setTextViewText(R.id.title, b.title)
                     v.setTextViewText(R.id.chapter, Ch.label(b, Ch.index(b, i, pos)))
-                    v.setImageViewBitmap(R.id.cover, Covers.gray(Covers.load(ctx, b), 160))
+                    v.setImageViewBitmap(R.id.cover, if (color) Covers.square(Covers.load(ctx, b), 160) else Covers.gray(Covers.load(ctx, b), 160))
                 }
                 v.setTextColor(R.id.title, fg)
                 v.setTextColor(R.id.chapter, dim)
                 v.setImageViewResource(R.id.play, if (p?.playWhenReady == true) R.drawable.ic_pause else R.drawable.ic_play)
-                for (id in intArrayOf(R.id.prev, R.id.back, R.id.play, R.id.fwd, R.id.next)) v.setInt(id, "setColorFilter", fg)
+                for (id in intArrayOf(R.id.prev, R.id.back, R.id.play, R.id.fwd, R.id.next)) v.setInt(id, "setColorFilter", btnColor)
                 v.setOnClickPendingIntent(R.id.play, pi(ctx, ACT_PLAY, 1))
                 v.setOnClickPendingIntent(R.id.back, pi(ctx, ACT_BACK, 2))
                 v.setOnClickPendingIntent(R.id.fwd, pi(ctx, ACT_FWD, 3))

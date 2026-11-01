@@ -67,6 +67,9 @@ object Store {
     var fwd = 30
     var autorewind = true
     var invert = false
+    var eink = true
+    var theme = "indigo"
+    var mode = "system"
     var ghToken = ""
     var skipSilence = false
     var boost = 0
@@ -163,6 +166,7 @@ object Store {
         o.put("fwd", fwd)
         o.put("autorewind", autorewind)
         o.put("invert", invert)
+        o.put("eink", eink).put("theme", theme).put("mode", mode)
         o.put("ghToken", ghToken)
         o.put("skipSilence", skipSilence)
         o.put("boost", boost)
@@ -199,6 +203,9 @@ object Store {
             fwd = o.optInt("fwd", 30)
             autorewind = o.optBoolean("autorewind", true)
             invert = o.optBoolean("invert", false)
+            eink = o.optBoolean("eink", true)
+            theme = o.optString("theme", "indigo")
+            mode = o.optString("mode", "system")
             ghToken = o.optString("ghToken", "")
             skipSilence = o.optBoolean("skipSilence", false)
             boost = o.optInt("boost", 0)

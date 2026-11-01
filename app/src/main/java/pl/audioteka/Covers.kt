@@ -27,7 +27,7 @@ import kotlin.math.abs
 object Covers {
     private val mem = LruCache<String, Bitmap>(60)
 
-    private fun key(b: Book) = b.id + "|" + (Store.coverOf(b) ?: "")
+    private fun key(b: Book) = b.id + "|" + (Store.coverOf(b) ?: "") + "|" + (if (Store.eink) "e" else "c")
 
     fun cached(b: Book): Bitmap? = mem.get(key(b))
 
@@ -78,11 +78,14 @@ object Covers {
     }
 
     /** Kopia w odcieniach szarości (np. do widżetu). */
-    fun gray(src: Bitmap, size: Int): Bitmap {
+    fun gray(src: Bitmap, size: Int): Bitmap = square(src, size, true)
+
+    /** Kwadratowa miniatura (w kolorze albo w odcieniach szarości). */
+    fun square(src: Bitmap, size: Int, grayscale: Boolean = false): Bitmap {
         val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         val p = Paint(Paint.FILTER_BITMAP_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+            if (grayscale) colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
         }
         val s = minOf(src.width, src.height)
         val sx = (src.width - s) / 2
@@ -96,13 +99,16 @@ object Covers {
         val size = 480
         val bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bm)
-        c.drawColor(Color.WHITE)
+        val h = abs(b.id.hashCode())
+        val pal = intArrayOf(0xFF4F46E5.toInt(), 0xFF0284C7.toInt(), 0xFF15803D.toInt(), 0xFFE11D74.toInt(),
+            0xFFEA580C.toInt(), 0xFF7C3AED.toInt(), 0xFF0F766E.toInt(), 0xFFB45309.toInt())
+        val ink = if (Store.eink) Color.BLACK else pal[(h / 7) % pal.size]
+        c.drawColor(if (Store.eink) Color.WHITE else Theme.blend(Color.WHITE, ink, 0.14f))
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
+            color = ink
             style = Paint.Style.STROKE
             strokeWidth = 6f
         }
-        val h = abs(b.id.hashCode())
         c.save()
         c.clipRect(24f, 24f, 456f, 268f)
         when (h % 5) {
@@ -128,7 +134,7 @@ object Covers {
         c.drawLine(24f, 284f, 456f, 284f, p)
 
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
+            color = if (Store.eink) Color.BLACK else Theme.blend(ink, Color.BLACK, 0.45f)
             typeface = Typeface.DEFAULT_BOLD
         }
         val text = b.title.ifBlank { "?" }
