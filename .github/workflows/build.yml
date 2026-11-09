@@ -20,7 +20,7 @@ jobs:
         with:
           gradle-version: 8.10.2
       - name: Build debug APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug || (sleep 30 && gradle assembleDebug --refresh-dependencies)
       - name: Prepare APK
         run: cp app/build/outputs/apk/debug/app-debug.apk audioteka.apk
       - uses: actions/upload-artifact@v4

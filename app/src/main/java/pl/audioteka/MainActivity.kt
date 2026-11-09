@@ -534,7 +534,17 @@ class MainActivity : Activity() {
 
     private fun seekBy(ms: Long) {
         val c = activeController() ?: return
+        if (!c.isCurrentMediaItemSeekable) { unseekable(); return }
         c.seekTo(maxOf(0L, c.currentPosition + ms))
+    }
+
+    private var unseekShown = 0L
+
+    /** Plik bez możliwości przewijania – podpowiedź, jak to naprawić. */
+    private fun unseekable() {
+        if (System.currentTimeMillis() - unseekShown < 8000) return
+        unseekShown = System.currentTimeMillis()
+        Toast.makeText(this, "Ten plik nie pozwala na przewijanie (jego format nie ma spisu pozycji).", Toast.LENGTH_LONG).show()
     }
 
     private fun goTo(i: Int, pos: Long) {
@@ -600,6 +610,7 @@ class MainActivity : Activity() {
                     val fromPos = c?.currentPosition ?: Store.peek(b.id).pos
                     // nie skacz na sam koniec (książka uznałaby się za skończoną)
                     val target = (spanStart + (spanEnd - spanStart) * (s?.progress ?: 0) / 1000).coerceAtMost(maxOf(spanStart, spanEnd - 1500))
+                    if (c != null && !c.isCurrentMediaItemSeekable && spanI == c.currentMediaItemIndex) { unseekable(); updatePlayer(); return }
                     undoI = fromI; undoPos = fromPos; undoUntil = System.currentTimeMillis() + 15_000
                     goTo(spanI, target)
                     updatePlayer()
