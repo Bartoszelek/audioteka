@@ -77,6 +77,9 @@ object Store {
 
     @Volatile var books: List<Book> = emptyList()
     private val progress = HashMap<String, Progress>()
+
+    /** Zapomina postęp książki (po usunięciu z telefonu). */
+    fun forget(id: String) { progress.remove(id) }
     val hidden = HashSet<String>()
 
     /** Pliki bez spisu pozycji → naprawiona kopia (M4A) w pamięci aplikacji. */

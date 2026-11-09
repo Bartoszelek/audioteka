@@ -943,6 +943,7 @@ class MainActivity : Activity() {
                 render()
             }, lp(top = 8))
             if (b.files.size > 1) col.addView(btn("Scal w jeden plik") { d.dismiss(); mergeDialog(b) }, lp(top = 8))
+            col.addView(btn("Usuń z telefonu") { d.dismiss(); confirmDelete(b) }, lp(top = 8))
             col.addView(btn("Ukryj z biblioteki") {
                 Store.hidden.add(b.id)
                 Store.saveState()
@@ -1437,7 +1438,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     private fun pickFolder() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
-            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
         )
         try {
             startActivityForResult(i, REQ_FOLDER)
@@ -1455,10 +1456,12 @@ class MainActivity : Activity() {
         when (requestCode) {
             REQ_FOLDER -> {
                 try {
-                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 } catch (e: Exception) {
+                    try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (x: Exception) {}
                 }
                 val s = uri.toString()
+                pendingDelete?.let { id -> pendingDelete = null; Store.book(id)?.let { b -> h.postDelayed({ deleteBook(b) }, 500) } }
                 if (s !in Store.folders) Store.folders.add(s)
                 Store.saveState()
                 screen = "lib"
@@ -1501,5 +1504,101 @@ class MainActivity : Activity() {
                 render()
             }
         }.start()
+    }
+
+    // ------------------------------------------------------------ usuwanie nagrań z telefonu
+    private var pendingDelete: String? = null
+
+    private fun fileSize(u: String): Long = try {
+        contentResolver.query(Uri.parse(u), arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+        } ?: 0L
+    } catch (e: Exception) {
+        0L
+    }
+
+    private fun confirmDelete(b: Book) {
+        val mb = b.files.sumOf { fileSize(it) } / 1_048_576
+        sheet("Usunąć z telefonu?") { col, d ->
+            col.addView(tv(b.title, 16f, true), lp(top = 4))
+            col.addView(tv("Plików: ${b.files.size}" + (if (mb > 0) " · $mb MB" else "") +
+                "\nNagrania zostaną trwale usunięte z pamięci telefonu razem z postępem i zakładkami. Tego nie da się cofnąć.", 14f, color = dim), lp(top = 8))
+            col.addView(btn("Tak, usuń z telefonu", true) { d.dismiss(); deleteBook(b) }, lp(top = 14))
+            col.addView(btn("Anuluj") { d.dismiss() }, lp(top = 8))
+        }
+    }
+
+    /** Usuwa pliki książki przez dostęp do folderu (SAF), pusty folder książki też. */
+    private fun deleteBook(b: Book) {
+        // zatrzymaj, jeśli właśnie gra
+        activeController()?.let { c -> if (Playback.bookIdOf(c) == b.id) { c.stop(); c.clearMediaItems() } }
+        toast("Usuwam…")
+        Thread {
+            var ok = 0
+            var denied = false
+            val parents = LinkedHashSet<Pair<Uri, String>>()
+            for (f in b.files) {
+                val u = Uri.parse(f)
+                try {
+                    if (android.provider.DocumentsContract.deleteDocument(contentResolver, u)) ok++
+                    try {
+                        val docId = android.provider.DocumentsContract.getDocumentId(u)
+                        val treeId = android.provider.DocumentsContract.getTreeDocumentId(u)
+                        val parent = docId.substringBeforeLast('/', "")
+                        if (parent.isNotEmpty() && parent != treeId && parent.length > treeId.length)
+                            parents.add(Pair(android.provider.DocumentsContract.buildTreeDocumentUri(u.authority, treeId), parent))
+                    } catch (e: Exception) {
+                    }
+                } catch (e: SecurityException) {
+                    denied = true
+                } catch (e: Exception) {
+                    // plik mógł już nie istnieć
+                    if (!fileExists(u)) ok++
+                }
+                Store.fixed.remove(f)?.let { java.io.File(it).delete() }
+                Store.checked.remove(f)
+            }
+            // pusty folder książki (zostały ewentualnie tylko okładki) – usuń
+            for ((tree, parent) in parents) {
+                try {
+                    val kids = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
+                    val names = ArrayList<String>()
+                    contentResolver.query(kids, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                        while (c.moveToNext()) names.add(c.getString(0) ?: "")
+                    }
+                    val onlyImages = names.all { n -> n.lowercase().let { it.endsWith(".jpg") || it.endsWith(".jpeg") || it.endsWith(".png") || it.endsWith(".webp") || it.endsWith(".nfo") || it.endsWith(".txt") || it.endsWith(".cue") } }
+                    if (onlyImages) android.provider.DocumentsContract.deleteDocument(contentResolver,
+                        android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, parent))
+                } catch (e: Exception) {
+                }
+            }
+            h.post {
+                if (denied && ok == 0) {
+                    pendingDelete = b.id
+                    sheet("Potrzebna zgoda na usuwanie") { col, d ->
+                        col.addView(tv("Audioteka ma dostęp do tego folderu tylko do odczytu. Wybierz ten sam folder jeszcze raz i stuknij „Zezwól” – potem usunę książkę automatycznie.", 14f, color = dim), lp(top = 4))
+                        col.addView(btn("Wybierz folder", true) { d.dismiss(); pickFolder() }, lp(top = 14))
+                        col.addView(btn("Anuluj") { d.dismiss(); pendingDelete = null }, lp(top = 8))
+                    }
+                    return@post
+                }
+                // usuń z biblioteki, postępu i okładek
+                Store.saveLibrary(Store.books.filter { it.id != b.id })
+                Store.forget(b.id)
+                Store.covers.remove(b.id)
+                Store.hidden.remove(b.id)
+                Store.saveState()
+                if (cur?.id == b.id) cur = null
+                screen = "lib"
+                render()
+                toast(if (ok == b.files.size) "Usunięto z telefonu: ${b.title}" else "Usunięto $ok z ${b.files.size} plików")
+            }
+        }.start()
+    }
+
+    private fun fileExists(u: Uri): Boolean = try {
+        contentResolver.query(u, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use { it.moveToFirst() } ?: false
+    } catch (e: Exception) {
+        false
     }
 }
