@@ -117,14 +117,16 @@ class PlaybackService : MediaSessionService() {
                     player.pause()
                     Store.clearSleep()
                 }
-                save()
+                // przy wczytaniu książki nie nadpisuj zapamiętanego miejsca
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) save()
                 PlayerWidget.update(this@PlaybackService, player)
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
                     val cur = current()
-                    if (cur != null) {
+                    val atEnd = player.mediaItemCount > 0 && player.currentMediaItemIndex >= player.mediaItemCount - 1
+                    if (cur != null && atEnd) {
                         val p = Store.prog(cur.first)
                         p.done = true
                         p.updated = System.currentTimeMillis()
@@ -226,6 +228,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun save() {
         val cur = current() ?: return
+        if (player.playbackState == Player.STATE_IDLE) return
         val p = Store.prog(cur.first)
         p.i = cur.second
         p.pos = max(0L, player.currentPosition)

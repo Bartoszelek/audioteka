@@ -89,6 +89,10 @@ class MainActivity : Activity() {
     private var vSleep: TextView? = null
     private var vSpeed: TextView? = null
     private var dragging = false
+    private var vUndo: TextView? = null
+    private var undoI = 0
+    private var undoPos = 0L
+    private var undoUntil = 0L
     private var spanI = 0
     private var spanStart = 0L
     private var spanEnd = 0L
@@ -339,7 +343,7 @@ class MainActivity : Activity() {
         lastView = key
         applyWindow()
         root.removeAllViews()
-        vChapter = null; vSeek = null; vCur = null; vDur = null; vLeft = null; vPP = null; vSleep = null; vSpeed = null
+        vChapter = null; vSeek = null; vCur = null; vDur = null; vLeft = null; vPP = null; vSleep = null; vSpeed = null; vUndo = null
         statusView = null
         updStatus = null
         when (screen) {
@@ -572,16 +576,33 @@ class MainActivity : Activity() {
             progressTintList = ColorStateList.valueOf(accent)
             thumbTintList = ColorStateList.valueOf(accent)
             progressBackgroundTintList = ColorStateList.valueOf(if (Store.eink) dim else lineC)
+            minimumHeight = dp(48)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            // przewijanie strony nie może przejmować przesuwania suwaka
+            setOnTouchListener { v, e ->
+                if (e.action == android.view.MotionEvent.ACTION_DOWN) v.parent?.requestDisallowInterceptTouchEvent(true)
+                false
+            }
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {}
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                    if (fromUser && spanEnd > spanStart) vCur?.text = hms((spanEnd - spanStart) * p / 1000)
+                }
+
                 override fun onStartTrackingTouch(s: SeekBar?) {
                     dragging = true
                 }
 
                 override fun onStopTrackingTouch(s: SeekBar?) {
                     dragging = false
-                    val c = activeController() ?: return
-                    if (spanEnd > spanStart) c.seekTo(spanI, spanStart + (spanEnd - spanStart) * (s?.progress ?: 0) / 1000)
+                    if (spanEnd <= spanStart) return
+                    val c = activeController()
+                    val fromI = c?.currentMediaItemIndex ?: spanI
+                    val fromPos = c?.currentPosition ?: Store.peek(b.id).pos
+                    // nie skacz na sam koniec (książka uznałaby się za skończoną)
+                    val target = (spanStart + (spanEnd - spanStart) * (s?.progress ?: 0) / 1000).coerceAtMost(maxOf(spanStart, spanEnd - 1500))
+                    undoI = fromI; undoPos = fromPos; undoUntil = System.currentTimeMillis() + 15_000
+                    goTo(spanI, target)
+                    updatePlayer()
                 }
             })
         }
@@ -595,6 +616,18 @@ class MainActivity : Activity() {
         times.addView(curV, lp(0, WRAP, 1f))
         times.addView(durV)
         col.addView(times)
+        val undo = tv("", 13f, true, accent).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, dp(6))
+            visibility = View.GONE
+            setOnClickListener {
+                goTo(undoI, undoPos)
+                undoUntil = 0
+                visibility = View.GONE
+            }
+        }
+        vUndo = undo
+        col.addView(undo)
 
         val ctl = hbox()
         fun cell(v: View) {
@@ -674,8 +707,13 @@ class MainActivity : Activity() {
         spanEnd = maxOf(spanStart + 1, Ch.end(b, k, fileDur))
         vChapter?.text = Ch.label(b, k)
         if (!dragging) vSeek?.progress = ((pos - spanStart) * 1000 / (spanEnd - spanStart)).toInt().coerceIn(0, 1000)
-        vCur?.text = hms(pos - spanStart)
+        if (!dragging) vCur?.text = hms(pos - spanStart)
         vDur?.text = hms(spanEnd - spanStart)
+        vUndo?.let { u ->
+            val show = System.currentTimeMillis() < undoUntil
+            u.visibility = if (show) View.VISIBLE else View.GONE
+            if (show) u.text = "↶ Wróć do poprzedniego miejsca"
+        }
         val speed = c?.playbackParameters?.speed ?: p.speed
         val left = b.durs.drop(i + 1).sum() + maxOf(0L, fileDur - pos)
         vLeft?.text = "Do końca książki: " + hm((left / speed).toLong()) + (if (speed != 1f) " (przy ${sp(speed)})" else "")

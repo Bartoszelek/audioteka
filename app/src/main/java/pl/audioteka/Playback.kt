@@ -28,8 +28,13 @@ object Playback {
         val pr = Store.prog(b.id)
         if (pr.done) {
             pr.done = false
-            pr.i = 0
-            pr.pos = 0
+            // od początku tylko wtedy, gdy książka naprawdę została dosłuchana do końca
+            val last = b.files.size - 1
+            val lastDur = b.durs.getOrElse(last) { 0L }
+            if (pr.i >= last && (lastDur <= 0 || pr.pos >= lastDur - 15_000)) {
+                pr.i = 0
+                pr.pos = 0
+            }
         }
         pr.updated = System.currentTimeMillis()
         Store.saveState()
