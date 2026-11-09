@@ -78,6 +78,18 @@ object Store {
     @Volatile var books: List<Book> = emptyList()
     private val progress = HashMap<String, Progress>()
     val hidden = HashSet<String>()
+
+    /** Pliki bez spisu pozycji → naprawiona kopia (M4A) w pamięci aplikacji. */
+    val fixed = HashMap<String, String>()
+
+    /** Pliki już sprawdzone pod kątem przewijania. */
+    val checked = HashSet<String>()
+
+    /** Adres do odtwarzania: naprawiona kopia, jeśli istnieje. */
+    fun playUri(u: String): String {
+        val f = fixed[u] ?: return u
+        return if (java.io.File(f).exists()) android.net.Uri.fromFile(java.io.File(f)).toString() else u
+    }
     var statTotal = 0L
     val statDays = HashMap<String, Long>()
 
@@ -174,6 +186,10 @@ object Store {
         for ((k, v) in covers) cv.put(k, v)
         o.put("covers", cv)
         o.put("hidden", JSONArray(hidden.toList()))
+        val fx = JSONObject()
+        for ((k, v) in fixed) fx.put(k, v)
+        o.put("fixed", fx)
+        o.put("checked", JSONArray(checked.toList()))
         o.put("statTotal", statTotal)
         val sd = JSONObject()
         for ((k, v) in statDays) sd.put(k, v)
@@ -211,6 +227,8 @@ object Store {
             boost = o.optInt("boost", 0)
             o.optJSONObject("covers")?.let { c -> for (k in c.keys()) covers[k] = c.optString(k) }
             o.optJSONArray("hidden")?.let { a -> for (n in 0 until a.length()) hidden.add(a.getString(n)) }
+            o.optJSONObject("fixed")?.let { c -> for (k in c.keys()) fixed[k] = c.optString(k) }
+            o.optJSONArray("checked")?.let { a -> for (n in 0 until a.length()) checked.add(a.getString(n)) }
             statTotal = o.optLong("statTotal", 0)
             o.optJSONObject("statDays")?.let { d -> for (k in d.keys()) statDays[k] = d.optLong(k) }
             o.optJSONObject("progress")?.let { pr ->

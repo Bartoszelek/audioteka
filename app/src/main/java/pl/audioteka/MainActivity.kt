@@ -142,6 +142,8 @@ class MainActivity : Activity() {
             if (screen == "lib" || screen == "player") render()
         }, ContextCompat.getMainExecutor(this))
         h.post(ui)
+        // w tle: sprawdź nowe pliki i napraw te bez spisu pozycji
+        if (!FixService.busy && Store.books.any { b -> b.files.any { it !in Store.checked && it !in Store.fixed } }) FixService.start(this)
     }
 
     override fun onStop() {
@@ -544,7 +546,10 @@ class MainActivity : Activity() {
     private fun unseekable() {
         if (System.currentTimeMillis() - unseekShown < 8000) return
         unseekShown = System.currentTimeMillis()
-        Toast.makeText(this, "Ten plik nie pozwala na przewijanie (jego format nie ma spisu pozycji).", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Ten plik nie ma spisu pozycji – naprawiam go w tle. Za chwilę przewijanie zadziała, a odtwarzanie wróci do zapamiętanego miejsca.", Toast.LENGTH_LONG).show()
+        val b = cur ?: return
+        val c = activeController() ?: return
+        b.files.getOrNull(c.currentMediaItemIndex)?.let { if (it !in Store.fixed) FixService.start(this, it) }
     }
 
     private fun goTo(i: Int, pos: Long) {
@@ -1177,6 +1182,11 @@ class MainActivity : Activity() {
         col.addView(btn(if (scanning) "Przeszukuję…" else "Przeszukaj foldery ponownie") { rescan() }, lp(top = 22))
 
         col.addView(tv("Aktualizacje", 17f, true), lp(top = 26))
+        col.addView(tv("Naprawa przewijania", 17f, true), lp(top = 20))
+        col.addView(tv("Pliki bez spisu pozycji (np. MP3 pobrane z internetu) są automatycznie kopiowane do formatu M4A, żeby działało przewijanie i powrót do zapamiętanego miejsca. Oryginały zostają nietknięte." +
+            "\nNaprawione kopie: ${Store.fixed.size} plików, ${Fixer.usedMb(this)} MB" + (if (FixService.busy) "\nTrwa: " + FixService.status else ""), 13f, color = dim), lp(top = 4))
+        col.addView(btn("Sprawdź wszystkie pliki ponownie") { Store.checked.clear(); Store.saveState(); FixService.start(this); toast("Sprawdzam pliki w tle") }, lp(top = 8))
+        if (Store.fixed.isNotEmpty()) col.addView(btn("Usuń naprawione kopie") { Fixer.clear(this); toast("Usunięto"); render() }, lp(top = 8))
         col.addView(btn("Instrukcja: jak zaktualizować aplikację") { screen = "help"; render() }, lp(top = 8))
         item(col, tv("Zainstalowana wersja", 15f), tv(versionName(), 15f, true))
         if (Store.ghToken.isBlank()) {

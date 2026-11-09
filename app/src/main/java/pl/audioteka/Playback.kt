@@ -20,7 +20,7 @@ object Playback {
             old.updated = System.currentTimeMillis()
         }
         val items = b.files.mapIndexed { i, u ->
-            MediaItem.Builder().setUri(Uri.parse(u)).setMediaId("${b.id}|$i")
+            MediaItem.Builder().setUri(Uri.parse(Store.playUri(u))).setMediaId("${b.id}|$i")
                 .setMediaMetadata(
                     MediaMetadata.Builder().setTitle(b.names[i]).setArtist(b.title).setAlbumTitle(b.title).build()
                 ).build()

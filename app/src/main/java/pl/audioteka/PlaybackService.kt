@@ -37,6 +37,7 @@ class PlaybackService : MediaSessionService() {
     companion object {
         const val CMD_BACK = "pl.audioteka.BACK"
         const val CMD_FWD = "pl.audioteka.FWD"
+        var instance: PlaybackService? = null
     }
 
     private var session: MediaSession? = null
@@ -82,8 +83,26 @@ class PlaybackService : MediaSessionService() {
         player.seekTo(max(0L, player.currentPosition + ms))
     }
 
+    /** Naprawiona kopia gotowa – podmień plik w odtwarzaczu i wróć do zapamiętanego miejsca. */
+    fun onFixed(uri: String) {
+        val cur = current() ?: return
+        val b = Store.book(cur.first) ?: return
+        b.files.forEachIndexed { i, f ->
+            if (f != uri || i >= player.mediaItemCount) return@forEachIndexed
+            val isCur = i == player.currentMediaItemIndex
+            val pos = player.currentPosition
+            val item = player.getMediaItemAt(i).buildUpon().setUri(android.net.Uri.parse(Store.playUri(f))).build()
+            player.replaceMediaItem(i, item)
+            if (isCur) {
+                val p = Store.prog(b.id)
+                player.seekTo(i, if (p.i == i) max(p.pos, pos) else pos)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         Store.init(this)
         // przewijanie także w plikach bez spisu treści (MP3 VBR bez nagłówka, AAC/ADTS itp.)
         val extractors = DefaultExtractorsFactory()
@@ -132,6 +151,14 @@ class PlaybackService : MediaSessionService() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                // plik bez spisu pozycji – napraw w tle (potem wrócimy do zapamiętanego miejsca)
+                if (state == Player.STATE_READY && !player.isCurrentMediaItemSeekable) {
+                    val c = current()
+                    if (c != null) {
+                        val u = Store.book(c.first)?.files?.getOrNull(c.second)
+                        if (u != null && u !in Store.fixed) FixService.start(this@PlaybackService, u)
+                    }
+                }
                 if (state == Player.STATE_ENDED) {
                     val cur = current()
                     val atEnd = player.mediaItemCount > 0 && player.currentMediaItemIndex >= player.mediaItemCount - 1
@@ -239,6 +266,8 @@ class PlaybackService : MediaSessionService() {
         val cur = current() ?: return
         if (player.playbackState == Player.STATE_IDLE) return
         val p = Store.prog(cur.first)
+        // plik nie daje się przewinąć i grał od początku – nie nadpisuj zapamiętanego miejsca
+        if (!player.isCurrentMediaItemSeekable && p.i == cur.second && p.pos > player.currentPosition + 5000) return
         p.i = cur.second
         p.pos = max(0L, player.currentPosition)
         p.speed = player.playbackParameters.speed
@@ -318,6 +347,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        instance = null
         save()
         h.removeCallbacks(tick)
         if (sensorOn) sm.unregisterListener(shake)
